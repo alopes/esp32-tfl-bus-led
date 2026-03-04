@@ -8,15 +8,16 @@
 #error "WIFI_PASSWORD not configured — create secrets.ini (see secrets.example.ini)"
 #endif
 
+// TFL_STOP_ID and TRACKED_LINES are optional compile-time values.
+// The firmware will fall back to NVS-stored values (configurable at runtime
+// via the HTTP API) when these are not set or left empty.
 #ifndef TFL_STOP_ID
-#error "TFL_STOP_ID not configured — create secrets.ini (see secrets.example.ini)"
+#define TFL_STOP_ID ""
 #endif
 
 #ifndef TRACKED_LINES
-#error "TRACKED_LINES not configured — create secrets.ini (see secrets.example.ini)"
+#define TRACKED_LINES ""
 #endif
-
-#define TFL_STOP_URL "https://api.tfl.gov.uk/StopPoint/" TFL_STOP_ID "/Arrivals"
 
 const unsigned long POLL_INTERVAL_MS = 30000;
 
