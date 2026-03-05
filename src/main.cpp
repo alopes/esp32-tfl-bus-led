@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include <DNSServer.h>
 #include <Adafruit_NeoPixel.h>
 #include <HTTPClient.h>
@@ -153,6 +154,38 @@ void ledFactoryResetWarning() {
     }
 }
 
+// ─── mDNS ─────────────────────────────────────────────────────────────────
+
+void startMDNS() {
+    MDNS.end();
+
+    char hostname[64] = "";
+    if (cfgDeviceName[0] != '\0') {
+        snprintf(hostname, sizeof(hostname), "busled-%.56s", cfgDeviceName);
+        for (char* p = hostname + 7; *p; p++) {
+            char c = (*p == ' ') ? '-' : tolower((unsigned char)*p);
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) c = '-';
+            *p = c;
+        }
+        size_t len = strlen(hostname);
+        while (len > 7 && hostname[7] == '-') { memmove(hostname + 7, hostname + 8, len - 7); --len; }
+        while (len > 7 && hostname[len - 1] == '-') hostname[--len] = '\0';
+    }
+
+    if (strlen(hostname) <= 7) {
+        uint8_t mac[6];
+        WiFi.macAddress(mac);
+        snprintf(hostname, sizeof(hostname), "busled-%02x%02x%02x", mac[3], mac[4], mac[5]);
+    }
+
+    if (MDNS.begin(hostname)) {
+        MDNS.addService("http", "tcp", 80);
+        Serial.printf("mDNS started: %s.local\n", hostname);
+    } else {
+        Serial.println("mDNS failed to start");
+    }
+}
+
 // ─── Wi-Fi ─────────────────────────────────────────────────────────────────
 
 bool connectWiFi() {
@@ -171,6 +204,7 @@ bool connectWiFi() {
 
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("\nConnected! IP: %s\n", WiFi.localIP().toString().c_str());
+        startMDNS();
         return true;
     }
     Serial.println("\nWi-Fi connection failed");
