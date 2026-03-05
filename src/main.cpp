@@ -22,51 +22,62 @@ Adafruit_NeoPixel led(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 char currentLine[8]  = "";
 char currentDest[32] = "";
 bool flashState      = false;
-unsigned long lastPoll    = 0;
+unsigned long lastPoll      = 0;
+unsigned long lastLedUpdate = 0;
 int           currentMinutes = -1;
 
 // ─── NVS helpers ───────────────────────────────────────────────────────────
 
 void loadConfig() {
-    prefs.begin("busled", true);
-    String val;
+    if (!prefs.begin("busled", false)) {
+        Serial.println("NVS not available, using compile-time defaults");
+        strncpy(cfgWifiSsid, WIFI_SSID, sizeof(cfgWifiSsid) - 1);
+        cfgWifiSsid[sizeof(cfgWifiSsid) - 1] = '\0';
+        strncpy(cfgWifiPassword, WIFI_PASSWORD, sizeof(cfgWifiPassword) - 1);
+        cfgWifiPassword[sizeof(cfgWifiPassword) - 1] = '\0';
+        strncpy(cfgStopId, TFL_STOP_ID, sizeof(cfgStopId) - 1);
+        cfgStopId[sizeof(cfgStopId) - 1] = '\0';
+        strncpy(cfgTrackedLines, TRACKED_LINES, sizeof(cfgTrackedLines) - 1);
+        cfgTrackedLines[sizeof(cfgTrackedLines) - 1] = '\0';
+        return;
+    }
 
-    val = prefs.getString("deviceName", "");
-    strncpy(cfgDeviceName, val.c_str(), sizeof(cfgDeviceName) - 1);
-    cfgDeviceName[sizeof(cfgDeviceName) - 1] = '\0';
+    auto loadStr = [](Preferences &p, const char* key, char* dest, size_t destSize, const char* fallback) {
+        String val = p.isKey(key) ? p.getString(key) : String(fallback);
+        strncpy(dest, val.c_str(), destSize - 1);
+        dest[destSize - 1] = '\0';
+    };
 
-    val = prefs.getString("wifiSsid", WIFI_SSID);
-    strncpy(cfgWifiSsid, val.c_str(), sizeof(cfgWifiSsid) - 1);
-    cfgWifiSsid[sizeof(cfgWifiSsid) - 1] = '\0';
-
-    val = prefs.getString("wifiPassword", WIFI_PASSWORD);
-    strncpy(cfgWifiPassword, val.c_str(), sizeof(cfgWifiPassword) - 1);
-    cfgWifiPassword[sizeof(cfgWifiPassword) - 1] = '\0';
-
-    val = prefs.getString("stopId", TFL_STOP_ID);
-    strncpy(cfgStopId, val.c_str(), sizeof(cfgStopId) - 1);
-    cfgStopId[sizeof(cfgStopId) - 1] = '\0';
-
-    val = prefs.getString("trackedLines", TRACKED_LINES);
-    strncpy(cfgTrackedLines, val.c_str(), sizeof(cfgTrackedLines) - 1);
-    cfgTrackedLines[sizeof(cfgTrackedLines) - 1] = '\0';
+    loadStr(prefs, "deviceName",   cfgDeviceName,    sizeof(cfgDeviceName),    "");
+    loadStr(prefs, "wifiSsid",     cfgWifiSsid,      sizeof(cfgWifiSsid),      WIFI_SSID);
+    loadStr(prefs, "wifiPassword", cfgWifiPassword,   sizeof(cfgWifiPassword),  WIFI_PASSWORD);
+    loadStr(prefs, "stopId",       cfgStopId,         sizeof(cfgStopId),        TFL_STOP_ID);
+    loadStr(prefs, "trackedLines", cfgTrackedLines,   sizeof(cfgTrackedLines),  TRACKED_LINES);
 
     prefs.end();
 }
 
-void saveDeviceConfig() {
-    prefs.begin("busled", false);
+bool saveDeviceConfig() {
+    if (!prefs.begin("busled", false)) {
+        Serial.println("NVS open failed for device config save");
+        return false;
+    }
     prefs.putString("deviceName",   cfgDeviceName);
     prefs.putString("wifiSsid",     cfgWifiSsid);
     prefs.putString("wifiPassword", cfgWifiPassword);
     prefs.end();
+    return true;
 }
 
-void saveTrackingConfig() {
-    prefs.begin("busled", false);
+bool saveTrackingConfig() {
+    if (!prefs.begin("busled", false)) {
+        Serial.println("NVS open failed for tracking config save");
+        return false;
+    }
     prefs.putString("stopId",        cfgStopId);
     prefs.putString("trackedLines",  cfgTrackedLines);
     prefs.end();
+    return true;
 }
 
 // ─── LED helpers ───────────────────────────────────────────────────────────
@@ -112,6 +123,11 @@ int fetchNearestBusMinutes() {
 
     if (cfgStopId[0] == '\0') {
         Serial.println("No stop ID configured");
+        return -1;
+    }
+
+    if (cfgTrackedLines[0] == '\0') {
+        Serial.println("No tracked lines configured");
         return -1;
     }
 
@@ -185,7 +201,9 @@ int fetchNearestBusMinutes() {
 
     int minutes = minSeconds / 60;
     strncpy(currentLine, nearestLine, sizeof(currentLine) - 1);
+    currentLine[sizeof(currentLine) - 1] = '\0';
     strncpy(currentDest, nearestDest, sizeof(currentDest) - 1);
+    currentDest[sizeof(currentDest) - 1] = '\0';
     Serial.printf("Nearest: %s to %s in %d min\n", currentLine, currentDest, minutes);
     return minutes;
 }
@@ -212,8 +230,7 @@ void updateLED(int minutes) {
 }
 
 // ─── HTTP server ───────────────────────────────────────────────────────────
-// NOTE: This API is currently unauthenticated (preview only).
-// Authentication (API key via X-Api-Key header) is planned as a follow-up.
+// TODO: add X-Api-Key authentication — this API is currently unauthenticated (preview only).
 
 void handleGetConfigDevice() {
     JsonDocument doc;
@@ -242,37 +259,65 @@ void handlePostConfigDevice() {
 
     bool wifiChanged = false;
 
-    if (doc["deviceName"].is<const char*>()) {
+    if (!doc["deviceName"].isNull()) {
+        if (!doc["deviceName"].is<const char*>()) {
+            server.send(400, "application/json", "{\"error\":\"deviceName must be a string\"}");
+            return;
+        }
         strncpy(cfgDeviceName, doc["deviceName"].as<const char*>(), sizeof(cfgDeviceName) - 1);
         cfgDeviceName[sizeof(cfgDeviceName) - 1] = '\0';
     }
 
-    if (doc["wifi"]["ssid"].is<const char*>()) {
-        const char* newSsid = doc["wifi"]["ssid"].as<const char*>();
-        if (strcmp(cfgWifiSsid, newSsid) != 0) {
-            strncpy(cfgWifiSsid, newSsid, sizeof(cfgWifiSsid) - 1);
-            cfgWifiSsid[sizeof(cfgWifiSsid) - 1] = '\0';
-            wifiChanged = true;
+    if (!doc["wifi"].isNull()) {
+        if (!doc["wifi"].is<JsonObject>()) {
+            server.send(400, "application/json", "{\"error\":\"wifi must be an object\"}");
+            return;
+        }
+
+        if (!doc["wifi"]["ssid"].isNull()) {
+            if (!doc["wifi"]["ssid"].is<const char*>()) {
+                server.send(400, "application/json", "{\"error\":\"wifi.ssid must be a string\"}");
+                return;
+            }
+            const char* newSsid = doc["wifi"]["ssid"].as<const char*>();
+            if (newSsid[0] == '\0') {
+                server.send(400, "application/json", "{\"error\":\"wifi.ssid must not be empty\"}");
+                return;
+            }
+            if (strcmp(cfgWifiSsid, newSsid) != 0) {
+                strncpy(cfgWifiSsid, newSsid, sizeof(cfgWifiSsid) - 1);
+                cfgWifiSsid[sizeof(cfgWifiSsid) - 1] = '\0';
+                wifiChanged = true;
+            }
+        }
+
+        if (!doc["wifi"]["password"].isNull()) {
+            if (!doc["wifi"]["password"].is<const char*>()) {
+                server.send(400, "application/json", "{\"error\":\"wifi.password must be a string\"}");
+                return;
+            }
+            const char* newPass = doc["wifi"]["password"].as<const char*>();
+            if (strcmp(cfgWifiPassword, newPass) != 0) {
+                strncpy(cfgWifiPassword, newPass, sizeof(cfgWifiPassword) - 1);
+                cfgWifiPassword[sizeof(cfgWifiPassword) - 1] = '\0';
+                wifiChanged = true;
+            }
         }
     }
 
-    if (doc["wifi"]["password"].is<const char*>()) {
-        const char* newPass = doc["wifi"]["password"].as<const char*>();
-        if (strcmp(cfgWifiPassword, newPass) != 0) {
-            strncpy(cfgWifiPassword, newPass, sizeof(cfgWifiPassword) - 1);
-            cfgWifiPassword[sizeof(cfgWifiPassword) - 1] = '\0';
-            wifiChanged = true;
-        }
+    if (!saveDeviceConfig()) {
+        server.send(500, "application/json", "{\"error\":\"Failed to persist config\"}");
+        return;
     }
-
-    saveDeviceConfig();
     server.send(200, "application/json", "{}");
 
     if (wifiChanged) {
-        // Brief delay to allow the HTTP response to be transmitted before
-        // dropping the Wi-Fi connection.
         delay(100);
-        WiFi.disconnect(false, false);
+        WiFi.disconnect(true);
+        unsigned long start = millis();
+        while (WiFi.status() == WL_CONNECTED && millis() - start < 5000) {
+            delay(50);
+        }
         connectWiFi();
     }
 }
@@ -320,6 +365,11 @@ void handlePostConfigTracking() {
         return;
     }
 
+    if (stops.size() > 1) {
+        server.send(400, "application/json", "{\"error\":\"Only one stop is supported\"}");
+        return;
+    }
+
     if (stops.size() > 0) {
         JsonObject stop = stops[0].as<JsonObject>();
 
@@ -328,19 +378,35 @@ void handlePostConfigTracking() {
             return;
         }
 
-        strncpy(cfgStopId, stop["stopId"].as<const char*>(), sizeof(cfgStopId) - 1);
+        const char* stopId = stop["stopId"].as<const char*>();
+        if (stopId[0] == '\0') {
+            server.send(400, "application/json", "{\"error\":\"stopId must not be empty\"}");
+            return;
+        }
+
+        strncpy(cfgStopId, stopId, sizeof(cfgStopId) - 1);
         cfgStopId[sizeof(cfgStopId) - 1] = '\0';
 
         JsonArray lines = stop["lines"].as<JsonArray>();
         String linesStr = "";
         bool first = true;
         for (JsonVariant line : lines) {
-            const char* lineStr = line.as<const char*>();
-            if (lineStr && lineStr[0] != '\0') {
-                if (!first) linesStr += ",";
-                linesStr += lineStr;
-                first = false;
+            if (!line.is<const char*>()) {
+                server.send(400, "application/json", "{\"error\":\"Each line must be a non-empty string\"}");
+                return;
             }
+            const char* lineStr = line.as<const char*>();
+            if (!lineStr || lineStr[0] == '\0') {
+                server.send(400, "application/json", "{\"error\":\"Each line must be a non-empty string\"}");
+                return;
+            }
+            if (!first) linesStr += ",";
+            linesStr += lineStr;
+            first = false;
+        }
+        if (linesStr.length() >= sizeof(cfgTrackedLines)) {
+            server.send(400, "application/json", "{\"error\":\"Tracked lines list too long\"}");
+            return;
         }
         strncpy(cfgTrackedLines, linesStr.c_str(), sizeof(cfgTrackedLines) - 1);
         cfgTrackedLines[sizeof(cfgTrackedLines) - 1] = '\0';
@@ -349,7 +415,10 @@ void handlePostConfigTracking() {
         cfgTrackedLines[0]  = '\0';
     }
 
-    saveTrackingConfig();
+    if (!saveTrackingConfig()) {
+        server.send(500, "application/json", "{\"error\":\"Failed to persist config\"}");
+        return;
+    }
     server.send(200, "application/json", "{}");
 }
 
@@ -361,7 +430,7 @@ void handleGetStatus() {
     wifi["ip"]        = WiFi.localIP().toString();
 
     JsonObject tracking = doc["tracking"].to<JsonObject>();
-    tracking["lastPollMs"]          = lastPoll;
+    tracking["msSinceLastPoll"]     = (lastPoll > 0) ? millis() - lastPoll : 0;
     tracking["nearestBusMinutes"]   = currentMinutes;
     tracking["nearestLine"]         = currentLine;
     tracking["nearestDestination"]  = currentDest;
@@ -413,19 +482,21 @@ void loop() {
         currentMinutes = fetchNearestBusMinutes();
     }
 
-    updateLED(currentMinutes);
+    unsigned long ledInterval = (currentMinutes >= 0 && currentMinutes < THRESHOLD_RED) ? 500 : 1000;
 
-    if (currentMinutes >= 0 && currentMinutes < THRESHOLD_RED) {
-        Serial.printf("%s to %s — %d min [flashing red]\n", currentLine, currentDest, currentMinutes);
-        delay(500);
-    } else if (currentMinutes >= 0) {
-        const char* colour = currentMinutes >= THRESHOLD_BLUE ? "blue" :
-                             currentMinutes >= THRESHOLD_YELLOW ? "yellow" : "red";
-        Serial.printf("%s to %s — %d min [%s]\n", currentLine, currentDest, currentMinutes, colour);
-        delay(1000);
-    } else {
-        Serial.println("No buses — LED off");
-        delay(1000);
+    if (now - lastLedUpdate >= ledInterval) {
+        lastLedUpdate = now;
+        updateLED(currentMinutes);
+
+        if (currentMinutes >= 0 && currentMinutes < THRESHOLD_RED) {
+            Serial.printf("%s to %s — %d min [flashing red]\n", currentLine, currentDest, currentMinutes);
+        } else if (currentMinutes >= 0) {
+            const char* colour = currentMinutes >= THRESHOLD_BLUE ? "blue" :
+                                 currentMinutes >= THRESHOLD_YELLOW ? "yellow" : "red";
+            Serial.printf("%s to %s — %d min [%s]\n", currentLine, currentDest, currentMinutes, colour);
+        } else {
+            Serial.println("No buses — LED off");
+        }
     }
 }
 
