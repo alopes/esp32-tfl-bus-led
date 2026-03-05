@@ -159,7 +159,7 @@ void ledFactoryResetWarning() {
 void startMDNS() {
     MDNS.end();
 
-    char hostname[64];
+    char hostname[64] = "";
     if (cfgDeviceName[0] != '\0') {
         snprintf(hostname, sizeof(hostname), "busled-%.56s", cfgDeviceName);
         for (char* p = hostname + 7; *p; p++) {
