@@ -163,7 +163,7 @@ void startMDNS() {
     if (cfgDeviceName[0] != '\0') {
         snprintf(hostname, sizeof(hostname), "busled-%.56s", cfgDeviceName);
         for (char* p = hostname + 7; *p; p++) {
-            char c = (*p == ' ') ? '-' : tolower(*p);
+            char c = (*p == ' ') ? '-' : tolower((unsigned char)*p);
             if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) c = '-';
             *p = c;
         }
