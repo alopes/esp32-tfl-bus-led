@@ -125,7 +125,7 @@ button:hover{background:#b71c1c}
 <div class="roundel"><div class="ring"></div><div class="bar"></div></div>
 <h1>Bus Indicator Setup</h1><p class="sub">Connect to Wi-Fi and configure bus tracking.</p>
 <form id="f" method="POST" action="/provision">
-<label class="req">Wi-Fi Network</label>
+<label class="req" for="sel">Wi-Fi Network</label>
 <select id="sel" onchange="toggleManual()"><option value="">Scanning...</option></select>
 <input id="s" name="ssid" maxlength="63" autocomplete="off" placeholder="Enter network name" style="display:none">
 <button type="button" class="btn-sm" onclick="doScan()">Rescan networks</button>
@@ -257,7 +257,7 @@ void handleWifiScan() {
         Network unique[32];
         int count = 0;
 
-        for (int i = 0; i < n && count < 32; i++) {
+        for (int i = 0; i < n; i++) {
             String ssid = WiFi.SSID(i);
             if (ssid.length() == 0) continue;
 
@@ -272,7 +272,7 @@ void handleWifiScan() {
                     break;
                 }
             }
-            if (!found) {
+            if (!found && count < 32) {
                 unique[count].ssid = ssid;
                 unique[count].rssi = WiFi.RSSI(i);
                 unique[count].open = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
