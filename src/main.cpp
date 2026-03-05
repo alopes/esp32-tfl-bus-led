@@ -15,6 +15,7 @@ char cfgWifiSsid[64]      = "";
 char cfgWifiPassword[64]  = "";
 char cfgStopId[64]        = "";
 char cfgTrackedLines[128] = "";
+char cfgApiKey[33]        = "";
 
 Preferences prefs;
 WebServer    server(80);
@@ -34,6 +35,13 @@ int           currentMinutes = -1;
 
 // ─── NVS helpers ───────────────────────────────────────────────────────────
 
+void generateApiKey() {
+    for (int i = 0; i < 16; i++) {
+        uint8_t b = (uint8_t)(esp_random() & 0xFF);
+        snprintf(cfgApiKey + i * 2, 3, "%02x", b);
+    }
+}
+
 void loadConfig() {
     if (!prefs.begin("busled", false)) {
         Serial.println("NVS not available, using compile-time defaults");
@@ -45,6 +53,7 @@ void loadConfig() {
         cfgStopId[sizeof(cfgStopId) - 1] = '\0';
         strncpy(cfgTrackedLines, TRACKED_LINES, sizeof(cfgTrackedLines) - 1);
         cfgTrackedLines[sizeof(cfgTrackedLines) - 1] = '\0';
+        generateApiKey();
         return;
     }
 
@@ -59,6 +68,12 @@ void loadConfig() {
     loadStr(prefs, "wifiPassword", cfgWifiPassword,   sizeof(cfgWifiPassword),  WIFI_PASSWORD);
     loadStr(prefs, "stopId",       cfgStopId,         sizeof(cfgStopId),        TFL_STOP_ID);
     loadStr(prefs, "trackedLines", cfgTrackedLines,   sizeof(cfgTrackedLines),  TRACKED_LINES);
+    loadStr(prefs, "apiKey",       cfgApiKey,         sizeof(cfgApiKey),        "");
+
+    if (cfgApiKey[0] == '\0') {
+        generateApiKey();
+        prefs.putString("apiKey", cfgApiKey);
+    }
 
     prefs.end();
 }
@@ -153,7 +168,7 @@ doScan();
 </script>
 </body></html>)rawhtml";
 
-static const char PROVISIONING_SUCCESS[] PROGMEM = R"rawhtml(
+static const char PROVISIONING_SUCCESS_TEMPLATE[] PROGMEM = R"rawhtml(
 <!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Setup Complete</title><style>
 *{box-sizing:border-box;margin:0;padding:0}
@@ -161,7 +176,12 @@ body{font-family:'Johnston','Gill Sans',system-ui,sans-serif;background:#003888;
 .card{background:#fff;border-radius:8px;padding:2rem;width:100%;max-width:400px;box-shadow:0 4px 24px rgba(0,0,0,.2);text-align:center;color:#1c3f94}
 .tick{font-size:2.5rem;margin-bottom:.5rem}
 h1{font-size:1.2rem;margin-bottom:.5rem;color:#1c3f94;font-weight:700}p{font-size:.85rem;color:#666;margin-top:.5rem}
-</style></head><body><div class="card"><div class="tick">&#10003;</div><h1>Setup Complete</h1><p>Configuration saved. The device will now restart and connect to your Wi-Fi network.</p><p>This page will stop responding shortly.</p></div></body></html>)rawhtml";
+.key{background:#f6f8fa;border:2px solid #ccd6e0;border-radius:4px;padding:.5rem;font-family:monospace;font-size:.85rem;color:#1c3f94;word-break:break-all;margin-top:.8rem;text-align:center}
+label{font-size:.75rem;color:#999;display:block;margin-top:.8rem}
+</style></head><body><div class="card"><div class="tick">&#10003;</div><h1>Setup Complete</h1>
+<p>Configuration saved. The device will now restart and connect to your Wi-Fi network.</p>
+<label>API Key (save this — you'll need it to change settings)</label><div class="key">%s</div>
+<p>This page will stop responding shortly.</p></div></body></html>)rawhtml";
 
 // ─── Provisioning LED feedback ────────────────────────────────────────────
 
@@ -359,7 +379,9 @@ void startProvisioning() {
         saveDeviceConfig();
         saveTrackingConfig();
 
-        server.send_P(200, "text/html", PROVISIONING_SUCCESS);
+        char successPage[2048];
+        snprintf(successPage, sizeof(successPage), PROVISIONING_SUCCESS_TEMPLATE, cfgApiKey);
+        server.send(200, "text/html", successPage);
         Serial.println("Provisioning complete, restarting...");
         provisioningActive = false;
     });
@@ -510,7 +532,15 @@ void updateLED(int minutes) {
 }
 
 // ─── HTTP server ───────────────────────────────────────────────────────────
-// TODO: add X-Api-Key authentication — this API is currently unauthenticated (preview only).
+
+bool requireApiKey() {
+    String key = server.header("X-Api-Key");
+    if (key.length() == 0 || strcmp(key.c_str(), cfgApiKey) != 0) {
+        server.send(401, "application/json", "{\"error\":\"Invalid or missing API key\"}");
+        return false;
+    }
+    return true;
+}
 
 void handleGetConfigDevice() {
     JsonDocument doc;
@@ -525,6 +555,7 @@ void handleGetConfigDevice() {
 }
 
 void handlePostConfigDevice() {
+    if (!requireApiKey()) return;
     if (!server.hasArg("plain")) {
         server.send(400, "application/json", "{\"error\":\"Missing body\"}");
         return;
@@ -627,6 +658,7 @@ void handleGetConfigTracking() {
 }
 
 void handlePostConfigTracking() {
+    if (!requireApiKey()) return;
     if (!server.hasArg("plain")) {
         server.send(400, "application/json", "{\"error\":\"Missing body\"}");
         return;
@@ -721,6 +753,9 @@ void handleGetStatus() {
 }
 
 void setupServer() {
+    const char* headerKeys[] = {"X-Api-Key"};
+    server.collectHeaders(headerKeys, 1);
+
     server.on("/config/device",   HTTP_GET,  handleGetConfigDevice);
     server.on("/config/device",   HTTP_POST, handlePostConfigDevice);
     server.on("/config/tracking", HTTP_GET,  handleGetConfigTracking);
@@ -749,6 +784,7 @@ void setup() {
     Serial.println("LED self-test complete");
 
     loadConfig();
+    Serial.printf("API key: %s\n", cfgApiKey);
 
     if (cfgWifiSsid[0] == '\0') {
         Serial.println("No Wi-Fi credentials configured, entering provisioning mode");
@@ -773,10 +809,11 @@ void loop() {
     if (buttonPressed) {
         ledFactoryResetWarning();
         if (millis() - buttonPressStart >= FACTORY_RESET_HOLD_MS) {
-            Serial.println("Factory reset: clearing Wi-Fi credentials");
+            Serial.println("Factory reset: clearing Wi-Fi credentials and API key");
             if (prefs.begin("busled", false)) {
                 prefs.putString("wifiSsid", "");
                 prefs.putString("wifiPassword", "");
+                prefs.remove("apiKey");
                 prefs.end();
             }
             setLED(255, 255, 255);
