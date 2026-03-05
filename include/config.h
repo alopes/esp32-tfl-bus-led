@@ -1,11 +1,11 @@
 #pragma once
 
 #ifndef WIFI_SSID
-#error "WIFI_SSID not configured — create secrets.ini (see secrets.example.ini)"
+#define WIFI_SSID ""
 #endif
 
 #ifndef WIFI_PASSWORD
-#error "WIFI_PASSWORD not configured — create secrets.ini (see secrets.example.ini)"
+#define WIFI_PASSWORD ""
 #endif
 
 // TFL_STOP_ID and TRACKED_LINES are optional compile-time values.
@@ -20,6 +20,9 @@
 #endif
 
 const unsigned long POLL_INTERVAL_MS = 30000;
+
+const int BOOT_BUTTON_PIN = 0;
+const unsigned long FACTORY_RESET_HOLD_MS = 5000;
 
 const int LED_PIN       = 48;
 const int LED_COUNT     = 1;
