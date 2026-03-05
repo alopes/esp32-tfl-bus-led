@@ -168,8 +168,11 @@ void startMDNS() {
             *p = c;
         }
         size_t len = strlen(hostname);
+        while (len > 7 && hostname[7] == '-') { memmove(hostname + 7, hostname + 8, len - 7); --len; }
         while (len > 7 && hostname[len - 1] == '-') hostname[--len] = '\0';
-    } else {
+    }
+
+    if (strlen(hostname) <= 7) {
         uint8_t mac[6];
         WiFi.macAddress(mac);
         snprintf(hostname, sizeof(hostname), "busled-%02x%02x%02x", mac[3], mac[4], mac[5]);
