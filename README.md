@@ -44,20 +44,11 @@ To find your stop's NaptanId, search the [TfL API](https://api.tfl.gov.uk/) at `
 
 ### Compile-time credentials (optional)
 
-If you prefer to bake credentials into the firmware instead of using the setup portal:
+If you prefer to bake credentials into the firmware instead of using the setup portal, copy the example and fill in your values:
 
 ```bash
 cp secrets.example.ini secrets.ini
-```
-
-Edit `secrets.ini`:
-```
-[env:esp32s3]
-build_src_flags =
-    -DWIFI_SSID=\"your-wifi-name\"
-    -DWIFI_PASSWORD=\"your-wifi-password\"
-    -DTFL_STOP_ID=\"your-tfl-stop-naptan-id\"
-    -DTRACKED_LINES=\"line1,line2,Nline1\"
+# Edit secrets.ini with your Wi-Fi credentials, stop ID, and bus lines
 ```
 
 ## Factory Reset
