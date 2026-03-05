@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <ESPmDNS.h>
 #include <DNSServer.h>
 #include <Adafruit_NeoPixel.h>
 #include <HTTPClient.h>
@@ -175,6 +176,29 @@ bool connectWiFi() {
     }
     Serial.println("\nWi-Fi connection failed");
     return false;
+}
+
+// ─── mDNS ─────────────────────────────────────────────────────────────────
+
+void startMDNS() {
+    char hostname[72];
+    if (cfgDeviceName[0] != '\0') {
+        snprintf(hostname, sizeof(hostname), "busled-%s", cfgDeviceName);
+        for (char* p = hostname; *p; p++) {
+            *p = (*p == ' ') ? '-' : tolower(*p);
+        }
+    } else {
+        uint8_t mac[6];
+        WiFi.macAddress(mac);
+        snprintf(hostname, sizeof(hostname), "busled-%02x%02x%02x", mac[3], mac[4], mac[5]);
+    }
+
+    if (MDNS.begin(hostname)) {
+        MDNS.addService("http", "tcp", 80);
+        Serial.printf("mDNS started: %s.local\n", hostname);
+    } else {
+        Serial.println("mDNS failed to start");
+    }
 }
 
 // ─── Provisioning ─────────────────────────────────────────────────────────
@@ -632,6 +656,7 @@ void setup() {
         return;
     }
 
+    startMDNS();
     setupServer();
 }
 
