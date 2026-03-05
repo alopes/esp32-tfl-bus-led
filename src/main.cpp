@@ -154,9 +154,36 @@ void ledFactoryResetWarning() {
     }
 }
 
-// ─── Wi-Fi ─────────────────────────────────────────────────────────────────
+// ─── mDNS ─────────────────────────────────────────────────────────────────
 
-void startMDNS();
+void startMDNS() {
+    MDNS.end();
+
+    char hostname[64];
+    if (cfgDeviceName[0] != '\0') {
+        snprintf(hostname, sizeof(hostname), "busled-%.56s", cfgDeviceName);
+        for (char* p = hostname + 7; *p; p++) {
+            char c = (*p == ' ') ? '-' : tolower(*p);
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) c = '-';
+            *p = c;
+        }
+        size_t len = strlen(hostname);
+        while (len > 7 && hostname[len - 1] == '-') hostname[--len] = '\0';
+    } else {
+        uint8_t mac[6];
+        WiFi.macAddress(mac);
+        snprintf(hostname, sizeof(hostname), "busled-%02x%02x%02x", mac[3], mac[4], mac[5]);
+    }
+
+    if (MDNS.begin(hostname)) {
+        MDNS.addService("http", "tcp", 80);
+        Serial.printf("mDNS started: %s.local\n", hostname);
+    } else {
+        Serial.println("mDNS failed to start");
+    }
+}
+
+// ─── Wi-Fi ─────────────────────────────────────────────────────────────────
 
 bool connectWiFi() {
     if (WiFi.status() == WL_CONNECTED) return true;
@@ -179,33 +206,6 @@ bool connectWiFi() {
     }
     Serial.println("\nWi-Fi connection failed");
     return false;
-}
-
-// ─── mDNS ─────────────────────────────────────────────────────────────────
-
-void startMDNS() {
-    MDNS.end();
-
-    char hostname[64];
-    if (cfgDeviceName[0] != '\0') {
-        snprintf(hostname, sizeof(hostname), "busled-%.56s", cfgDeviceName);
-        for (char* p = hostname + 7; *p; p++) {
-            char c = (*p == ' ') ? '-' : tolower(*p);
-            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) c = '-';
-            *p = c;
-        }
-    } else {
-        uint8_t mac[6];
-        WiFi.macAddress(mac);
-        snprintf(hostname, sizeof(hostname), "busled-%02x%02x%02x", mac[3], mac[4], mac[5]);
-    }
-
-    if (MDNS.begin(hostname)) {
-        MDNS.addService("http", "tcp", 80);
-        Serial.printf("mDNS started: %s.local\n", hostname);
-    } else {
-        Serial.println("mDNS failed to start");
-    }
 }
 
 // ─── Provisioning ─────────────────────────────────────────────────────────
