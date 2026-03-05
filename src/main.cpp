@@ -102,33 +102,66 @@ void ledOff() {
 static const char PROVISIONING_PAGE[] PROGMEM = R"rawhtml(
 <!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Bus Indicator Setup</title><style>
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,system-ui,sans-serif;background:#1a1a2e;color:#e0e0e0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
-.card{background:#16213e;border-radius:12px;padding:2rem;width:100%;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,.3)}
-h1{font-size:1.3rem;margin-bottom:.3rem;color:#e94560}p.sub{font-size:.85rem;color:#888;margin-bottom:1.5rem}
-label{display:block;font-size:.85rem;margin-bottom:.3rem;color:#aaa}input{width:100%;padding:.6rem;border:1px solid #333;border-radius:6px;background:#0f3460;color:#e0e0e0;font-size:.95rem;margin-bottom:1rem}
-input:focus{outline:none;border-color:#e94560}.req::after{content:" *";color:#e94560}
-button{width:100%;padding:.7rem;background:#e94560;color:#fff;border:none;border-radius:6px;font-size:1rem;cursor:pointer;margin-top:.5rem}
-button:hover{background:#c73650}.err{color:#e94560;font-size:.85rem;margin-bottom:.5rem;display:none}
-</style></head><body><div class="card"><h1>Bus Indicator Setup</h1><p class="sub">Connect your device to Wi-Fi and configure bus tracking.</p>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Johnston','Gill Sans',system-ui,sans-serif;background:#003888;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
+.card{background:#fff;border-radius:8px;padding:2rem;width:100%;max-width:400px;box-shadow:0 4px 24px rgba(0,0,0,.2);color:#1c3f94}
+.roundel{width:48px;height:48px;margin:0 auto 1rem;position:relative}
+.roundel .bar{position:absolute;top:50%;left:0;width:100%;height:12px;margin-top:-6px;background:#dc241f;border-radius:2px}
+.roundel .ring{width:48px;height:48px;border:5px solid #dc241f;border-radius:50%;position:relative}
+h1{font-size:1.2rem;text-align:center;margin-bottom:.2rem;color:#1c3f94;font-weight:700;letter-spacing:-.02em}
+p.sub{font-size:.8rem;color:#666;margin-bottom:1.5rem;text-align:center}
+label{display:block;font-size:.8rem;margin-bottom:.3rem;color:#1c3f94;font-weight:600}
+input,select{width:100%;padding:.55rem;border:2px solid #ccd6e0;border-radius:4px;background:#f6f8fa;color:#1c3f94;font-size:.9rem;margin-bottom:.8rem;font-family:inherit}
+select{cursor:pointer}select option{background:#fff;color:#1c3f94}
+input:focus,select:focus{outline:none;border-color:#003888}
+.req::after{content:" *";color:#dc241f}
+button{width:100%;padding:.65rem;background:#dc241f;color:#fff;border:none;border-radius:4px;font-size:.95rem;cursor:pointer;margin-top:.3rem;font-family:inherit;font-weight:600;letter-spacing:.02em}
+button:hover{background:#b71c1c}
+.btn-sm{width:auto;display:inline-block;padding:.35rem .7rem;font-size:.75rem;margin:0 0 .8rem 0;background:#fff;color:#003888;border:2px solid #003888;font-weight:600}
+.btn-sm:hover{background:#003888;color:#fff}
+.err{color:#dc241f;font-size:.8rem;margin-bottom:.5rem;display:none}
+.sep{border:none;border-top:1px solid #e0e4e8;margin:1rem 0}
+</style></head><body><div class="card">
+<div class="roundel"><div class="ring"></div><div class="bar"></div></div>
+<h1>Bus Indicator Setup</h1><p class="sub">Connect to Wi-Fi and configure bus tracking.</p>
 <form id="f" method="POST" action="/provision">
-<label class="req" for="s">Wi-Fi Network Name</label><input id="s" name="ssid" required maxlength="63" autocomplete="off">
+<label class="req">Wi-Fi Network</label>
+<select id="sel" onchange="toggleManual()"><option value="">Scanning...</option></select>
+<input id="s" name="ssid" maxlength="63" autocomplete="off" placeholder="Enter network name" style="display:none">
+<button type="button" class="btn-sm" onclick="doScan()">Rescan networks</button>
 <label class="req" for="p">Wi-Fi Password</label><input id="p" name="password" type="password" maxlength="63">
+<hr class="sep">
 <label for="st">TfL Stop ID</label><input id="st" name="stopId" maxlength="63" placeholder="e.g. 490008660N">
 <label for="l">Bus Lines (comma-separated)</label><input id="l" name="lines" maxlength="127" placeholder="e.g. 55,243,N55">
 <label for="dn">Device Name</label><input id="dn" name="deviceName" maxlength="63" placeholder="e.g. Kitchen">
 <div class="err" id="e"></div>
 <button type="submit">Save &amp; Connect</button>
 </form></div>
-<script>document.getElementById('f').onsubmit=function(ev){var s=document.getElementById('s').value.trim();if(!s){ev.preventDefault();var e=document.getElementById('e');e.textContent='Wi-Fi network name is required.';e.style.display='block';return false;}}</script>
+<script>
+function bars(rssi){if(rssi>=-50)return'\u2588\u2588\u2588\u2588';if(rssi>=-60)return'\u2588\u2588\u2588\u2591';if(rssi>=-70)return'\u2588\u2588\u2591\u2591';return'\u2588\u2591\u2591\u2591';}
+function toggleManual(){var sel=document.getElementById('sel'),inp=document.getElementById('s');if(sel.value===''){var isManual=sel.options[sel.selectedIndex]&&sel.options[sel.selectedIndex].dataset.manual;if(isManual){inp.style.display='';inp.value='';inp.focus();return;}}inp.style.display='none';inp.value=sel.value;}
+function doScan(){var sel=document.getElementById('sel');sel.innerHTML='<option value="">Scanning...</option>';document.getElementById('s').style.display='none';
+fetch('/scan').then(function(r){return r.json();}).then(function(d){
+sel.innerHTML='';var nets=d.networks||[];
+if(nets.length===0){sel.innerHTML='<option value="">No networks found</option>';document.getElementById('s').style.display='';document.getElementById('s').value='';return;}
+for(var i=0;i<nets.length;i++){var o=document.createElement('option');o.value=nets[i].ssid;o.textContent=nets[i].ssid+(nets[i].open?' (open)':'')+' '+bars(nets[i].rssi);sel.appendChild(o);}
+var m=document.createElement('option');m.value='';m.dataset.manual='1';m.textContent='Other (enter manually)';sel.appendChild(m);
+document.getElementById('s').value=sel.value;
+}).catch(function(){sel.innerHTML='<option value="">Scan failed</option>';document.getElementById('s').style.display='';document.getElementById('s').value='';});}
+document.getElementById('f').onsubmit=function(ev){var inp=document.getElementById('s');if(!inp.value.trim()){ev.preventDefault();var e=document.getElementById('e');e.textContent='Wi-Fi network name is required.';e.style.display='block';return false;}};
+doScan();
+</script>
 </body></html>)rawhtml";
 
 static const char PROVISIONING_SUCCESS[] PROGMEM = R"rawhtml(
 <!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Setup Complete</title><style>
-*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,system-ui,sans-serif;background:#1a1a2e;color:#e0e0e0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
-.card{background:#16213e;border-radius:12px;padding:2rem;width:100%;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,.3);text-align:center}
-h1{font-size:1.3rem;margin-bottom:.5rem;color:#4ecca3}p{font-size:.9rem;color:#aaa;margin-top:.5rem}
-</style></head><body><div class="card"><h1>Setup Complete</h1><p>Configuration saved. The device will now restart and connect to your Wi-Fi network.</p><p>This page will stop responding shortly.</p></div></body></html>)rawhtml";
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Johnston','Gill Sans',system-ui,sans-serif;background:#003888;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
+.card{background:#fff;border-radius:8px;padding:2rem;width:100%;max-width:400px;box-shadow:0 4px 24px rgba(0,0,0,.2);text-align:center;color:#1c3f94}
+.tick{font-size:2.5rem;margin-bottom:.5rem}
+h1{font-size:1.2rem;margin-bottom:.5rem;color:#1c3f94;font-weight:700}p{font-size:.85rem;color:#666;margin-top:.5rem}
+</style></head><body><div class="card"><div class="tick">&#10003;</div><h1>Setup Complete</h1><p>Configuration saved. The device will now restart and connect to your Wi-Fi network.</p><p>This page will stop responding shortly.</p></div></body></html>)rawhtml";
 
 // ─── Provisioning LED feedback ────────────────────────────────────────────
 
@@ -211,6 +244,67 @@ bool connectWiFi() {
     return false;
 }
 
+// ─── Wi-Fi scan ──────────────────────────────────────────────────────────
+
+void handleWifiScan() {
+    int n = WiFi.scanNetworks(false, false);
+
+    JsonDocument doc;
+    JsonArray networks = doc["networks"].to<JsonArray>();
+
+    if (n > 0) {
+        struct Network { String ssid; int rssi; bool open; };
+        Network unique[32];
+        int count = 0;
+
+        for (int i = 0; i < n && count < 32; i++) {
+            String ssid = WiFi.SSID(i);
+            if (ssid.length() == 0) continue;
+
+            bool found = false;
+            for (int j = 0; j < count; j++) {
+                if (unique[j].ssid == ssid) {
+                    if (WiFi.RSSI(i) > unique[j].rssi) {
+                        unique[j].rssi = WiFi.RSSI(i);
+                        unique[j].open = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
+                    }
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                unique[count].ssid = ssid;
+                unique[count].rssi = WiFi.RSSI(i);
+                unique[count].open = (WiFi.encryptionType(i) == WIFI_AUTH_OPEN);
+                count++;
+            }
+        }
+
+        for (int i = 0; i < count - 1; i++) {
+            for (int j = i + 1; j < count; j++) {
+                if (unique[j].rssi > unique[i].rssi) {
+                    Network tmp = unique[i];
+                    unique[i] = unique[j];
+                    unique[j] = tmp;
+                }
+            }
+        }
+
+        for (int i = 0; i < count; i++) {
+            JsonObject net = networks.add<JsonObject>();
+            net["ssid"] = unique[i].ssid;
+            net["rssi"] = unique[i].rssi;
+            net["open"] = unique[i].open;
+        }
+    }
+
+    WiFi.scanDelete();
+
+    String body;
+    serializeJson(doc, body);
+    server.send(200, "application/json", body);
+}
+
 // ─── Provisioning ─────────────────────────────────────────────────────────
 
 void startProvisioning() {
@@ -219,7 +313,7 @@ void startProvisioning() {
     char apSsid[32];
     snprintf(apSsid, sizeof(apSsid), "BusIndicator-%02X%02X%02X", mac[3], mac[4], mac[5]);
 
-    WiFi.mode(WIFI_AP);
+    WiFi.mode(WIFI_AP_STA);
     WiFi.softAP(apSsid);
     delay(100);
     Serial.printf("Provisioning AP started: %s (IP: %s)\n", apSsid, WiFi.softAPIP().toString().c_str());
@@ -229,6 +323,8 @@ void startProvisioning() {
     server.on("/", HTTP_GET, []() {
         server.send_P(200, "text/html", PROVISIONING_PAGE);
     });
+
+    server.on("/scan", HTTP_GET, handleWifiScan);
 
     server.on("/provision", HTTP_POST, []() {
         String ssid = server.arg("ssid");
