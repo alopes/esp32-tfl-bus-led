@@ -36,7 +36,7 @@ No additional wiring needed.
 
 3. The device starts a Wi-Fi hotspot called **BusIndicator-XXYYZZ** (the LED pulses blue). Connect to it with your phone or laptop — a setup page opens automatically.
 
-   ![Setup portal](setup.jpg)
+   <img src="setup.jpg" alt="Setup portal" width="300">
 
 4. Enter your Wi-Fi credentials, TfL stop ID, and bus lines. The device saves the config, restarts, and connects to your network.
 
@@ -51,7 +51,7 @@ cp secrets.example.ini secrets.ini
 ```
 
 Edit `secrets.ini`:
-```ini
+```
 [env:esp32s3]
 build_src_flags =
     -DWIFI_SSID=\"your-wifi-name\"
@@ -66,7 +66,7 @@ Hold the **BOOT** button for 5 seconds (LED flashes white while held). The devic
 
 ## Configuration
 
-All settings (Wi-Fi, stop ID, tracked lines) can be changed at runtime via the [HTTP API](#http-api) without reflashing. Thresholds, LED settings, and poll interval can be adjusted in `include/config.h`.
+All settings (Wi-Fi, stop ID, tracked lines) can be changed at runtime via the HTTP API without reflashing. Thresholds, LED settings, and poll interval can be adjusted in `include/config.h`.
 
 ## Project Structure
 
