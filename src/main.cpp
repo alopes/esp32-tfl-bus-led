@@ -156,6 +156,8 @@ void ledFactoryResetWarning() {
 
 // ─── Wi-Fi ─────────────────────────────────────────────────────────────────
 
+void startMDNS();
+
 bool connectWiFi() {
     if (WiFi.status() == WL_CONNECTED) return true;
 
@@ -172,6 +174,7 @@ bool connectWiFi() {
 
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("\nConnected! IP: %s\n", WiFi.localIP().toString().c_str());
+        startMDNS();
         return true;
     }
     Serial.println("\nWi-Fi connection failed");
@@ -185,7 +188,9 @@ void startMDNS() {
     if (cfgDeviceName[0] != '\0') {
         snprintf(hostname, sizeof(hostname), "busled-%s", cfgDeviceName);
         for (char* p = hostname; *p; p++) {
-            *p = (*p == ' ') ? '-' : tolower(*p);
+            char c = (*p == ' ') ? '-' : tolower(*p);
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) c = '-';
+            *p = c;
         }
     } else {
         uint8_t mac[6];
@@ -656,7 +661,6 @@ void setup() {
         return;
     }
 
-    startMDNS();
     setupServer();
 }
 
