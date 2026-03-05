@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
+#include <DNSServer.h>
 #include <Adafruit_NeoPixel.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
@@ -16,6 +17,10 @@ char cfgTrackedLines[128] = "";
 
 Preferences prefs;
 WebServer    server(80);
+DNSServer    dnsServer;
+bool         provisioningActive = false;
+unsigned long buttonPressStart  = 0;
+bool         buttonWasPressed   = false;
 
 Adafruit_NeoPixel led(LED_COUNT, LED_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -91,11 +96,69 @@ void ledOff() {
     setLED(0, 0, 0);
 }
 
+// ─── Provisioning HTML ────────────────────────────────────────────────────
+
+static const char PROVISIONING_PAGE[] PROGMEM = R"rawhtml(
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bus Indicator Setup</title><style>
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,system-ui,sans-serif;background:#1a1a2e;color:#e0e0e0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
+.card{background:#16213e;border-radius:12px;padding:2rem;width:100%;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+h1{font-size:1.3rem;margin-bottom:.3rem;color:#e94560}p.sub{font-size:.85rem;color:#888;margin-bottom:1.5rem}
+label{display:block;font-size:.85rem;margin-bottom:.3rem;color:#aaa}input{width:100%;padding:.6rem;border:1px solid #333;border-radius:6px;background:#0f3460;color:#e0e0e0;font-size:.95rem;margin-bottom:1rem}
+input:focus{outline:none;border-color:#e94560}.req::after{content:" *";color:#e94560}
+button{width:100%;padding:.7rem;background:#e94560;color:#fff;border:none;border-radius:6px;font-size:1rem;cursor:pointer;margin-top:.5rem}
+button:hover{background:#c73650}.err{color:#e94560;font-size:.85rem;margin-bottom:.5rem;display:none}
+</style></head><body><div class="card"><h1>Bus Indicator Setup</h1><p class="sub">Connect your device to Wi-Fi and configure bus tracking.</p>
+<form id="f" method="POST" action="/provision">
+<label class="req" for="s">Wi-Fi Network Name</label><input id="s" name="ssid" required maxlength="63" autocomplete="off">
+<label class="req" for="p">Wi-Fi Password</label><input id="p" name="password" type="password" maxlength="63">
+<label for="st">TfL Stop ID</label><input id="st" name="stopId" maxlength="63" placeholder="e.g. 490008660N">
+<label for="l">Bus Lines (comma-separated)</label><input id="l" name="lines" maxlength="127" placeholder="e.g. 55,243,N55">
+<label for="dn">Device Name</label><input id="dn" name="deviceName" maxlength="63" placeholder="e.g. Kitchen">
+<div class="err" id="e"></div>
+<button type="submit">Save &amp; Connect</button>
+</form></div>
+<script>document.getElementById('f').onsubmit=function(ev){var s=document.getElementById('s').value.trim();if(!s){ev.preventDefault();var e=document.getElementById('e');e.textContent='Wi-Fi network name is required.';e.style.display='block';return false;}}</script>
+</body></html>)rawhtml";
+
+static const char PROVISIONING_SUCCESS[] PROGMEM = R"rawhtml(
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Setup Complete</title><style>
+*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,system-ui,sans-serif;background:#1a1a2e;color:#e0e0e0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
+.card{background:#16213e;border-radius:12px;padding:2rem;width:100%;max-width:400px;box-shadow:0 8px 32px rgba(0,0,0,.3);text-align:center}
+h1{font-size:1.3rem;margin-bottom:.5rem;color:#4ecca3}p{font-size:.9rem;color:#aaa;margin-top:.5rem}
+</style></head><body><div class="card"><h1>Setup Complete</h1><p>Configuration saved. The device will now restart and connect to your Wi-Fi network.</p><p>This page will stop responding shortly.</p></div></body></html>)rawhtml";
+
+// ─── Provisioning LED feedback ────────────────────────────────────────────
+
+void ledProvisioningPulse() {
+    static unsigned long lastToggle = 0;
+    static bool on = false;
+    if (millis() - lastToggle >= 1000) {
+        lastToggle = millis();
+        on = !on;
+        if (on) setLED(0, 0, 255);
+        else    ledOff();
+    }
+}
+
+void ledFactoryResetWarning() {
+    static unsigned long lastToggle = 0;
+    static bool on = false;
+    if (millis() - lastToggle >= 150) {
+        lastToggle = millis();
+        on = !on;
+        if (on) setLED(255, 255, 255);
+        else    ledOff();
+    }
+}
+
 // ─── Wi-Fi ─────────────────────────────────────────────────────────────────
 
-void connectWiFi() {
-    if (WiFi.status() == WL_CONNECTED) return;
+bool connectWiFi() {
+    if (WiFi.status() == WL_CONNECTED) return true;
 
+    WiFi.mode(WIFI_STA);
     Serial.printf("Connecting to %s", cfgWifiSsid);
     WiFi.begin(cfgWifiSsid, cfgWifiPassword);
 
@@ -108,9 +171,96 @@ void connectWiFi() {
 
     if (WiFi.status() == WL_CONNECTED) {
         Serial.printf("\nConnected! IP: %s\n", WiFi.localIP().toString().c_str());
-    } else {
-        Serial.println("\nWi-Fi connection failed");
+        return true;
     }
+    Serial.println("\nWi-Fi connection failed");
+    return false;
+}
+
+// ─── Provisioning ─────────────────────────────────────────────────────────
+
+void startProvisioning() {
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    char apSsid[32];
+    snprintf(apSsid, sizeof(apSsid), "BusIndicator-%02X%02X%02X", mac[3], mac[4], mac[5]);
+
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(apSsid);
+    delay(100);
+    Serial.printf("Provisioning AP started: %s (IP: %s)\n", apSsid, WiFi.softAPIP().toString().c_str());
+
+    dnsServer.start(53, "*", WiFi.softAPIP());
+
+    server.on("/", HTTP_GET, []() {
+        server.send_P(200, "text/html", PROVISIONING_PAGE);
+    });
+
+    server.on("/provision", HTTP_POST, []() {
+        String ssid = server.arg("ssid");
+        ssid.trim();
+        if (ssid.length() == 0) {
+            server.send(400, "text/plain", "Wi-Fi SSID is required");
+            return;
+        }
+
+        strncpy(cfgWifiSsid, ssid.c_str(), sizeof(cfgWifiSsid) - 1);
+        cfgWifiSsid[sizeof(cfgWifiSsid) - 1] = '\0';
+
+        String pass = server.arg("password");
+        strncpy(cfgWifiPassword, pass.c_str(), sizeof(cfgWifiPassword) - 1);
+        cfgWifiPassword[sizeof(cfgWifiPassword) - 1] = '\0';
+
+        String stopId = server.arg("stopId");
+        stopId.trim();
+        strncpy(cfgStopId, stopId.c_str(), sizeof(cfgStopId) - 1);
+        cfgStopId[sizeof(cfgStopId) - 1] = '\0';
+
+        String lines = server.arg("lines");
+        lines.trim();
+        strncpy(cfgTrackedLines, lines.c_str(), sizeof(cfgTrackedLines) - 1);
+        cfgTrackedLines[sizeof(cfgTrackedLines) - 1] = '\0';
+
+        String devName = server.arg("deviceName");
+        devName.trim();
+        strncpy(cfgDeviceName, devName.c_str(), sizeof(cfgDeviceName) - 1);
+        cfgDeviceName[sizeof(cfgDeviceName) - 1] = '\0';
+
+        saveDeviceConfig();
+        saveTrackingConfig();
+
+        server.send_P(200, "text/html", PROVISIONING_SUCCESS);
+        Serial.println("Provisioning complete, restarting...");
+        provisioningActive = false;
+    });
+
+    auto redirectToRoot = []() {
+        server.sendHeader("Location", "http://192.168.4.1/");
+        server.send(302, "text/plain", "");
+    };
+    server.on("/generate_204",       HTTP_GET, redirectToRoot);
+    server.on("/hotspot-detect.html", HTTP_GET, redirectToRoot);
+    server.on("/connecttest.txt",    HTTP_GET, redirectToRoot);
+    server.on("/ncsi.txt",           HTTP_GET, redirectToRoot);
+    server.onNotFound(redirectToRoot);
+
+    server.begin();
+    provisioningActive = true;
+
+    while (provisioningActive) {
+        dnsServer.processNextRequest();
+        server.handleClient();
+        ledProvisioningPulse();
+        delay(1);
+    }
+
+    delay(1000);
+    server.stop();
+    dnsServer.stop();
+    setLED(0, 255, 0);
+    delay(500);
+    ledOff();
+    ESP.restart();
 }
 
 // ─── TfL polling ───────────────────────────────────────────────────────────
@@ -456,6 +606,8 @@ void setup() {
     Serial.begin(115200);
     delay(1000);
 
+    pinMode(BOOT_BUTTON_PIN, INPUT_PULLUP);
+
     led.begin();
     led.setBrightness(LED_BRIGHTNESS);
     ledOff();
@@ -467,11 +619,44 @@ void setup() {
     Serial.println("LED self-test complete");
 
     loadConfig();
-    connectWiFi();
+
+    if (cfgWifiSsid[0] == '\0') {
+        Serial.println("No Wi-Fi credentials configured, entering provisioning mode");
+        startProvisioning();
+        return;
+    }
+
+    if (!connectWiFi()) {
+        Serial.println("Wi-Fi connection failed, entering provisioning mode");
+        startProvisioning();
+        return;
+    }
+
     setupServer();
 }
 
 void loop() {
+    bool buttonPressed = (digitalRead(BOOT_BUTTON_PIN) == LOW);
+    if (buttonPressed && !buttonWasPressed) {
+        buttonPressStart = millis();
+    }
+    if (buttonPressed) {
+        ledFactoryResetWarning();
+        if (millis() - buttonPressStart >= FACTORY_RESET_HOLD_MS) {
+            Serial.println("Factory reset: clearing Wi-Fi credentials");
+            if (prefs.begin("busled", false)) {
+                prefs.putString("wifiSsid", "");
+                prefs.putString("wifiPassword", "");
+                prefs.end();
+            }
+            setLED(255, 255, 255);
+            delay(500);
+            ledOff();
+            ESP.restart();
+        }
+    }
+    buttonWasPressed = buttonPressed;
+
     connectWiFi();
     server.handleClient();
 

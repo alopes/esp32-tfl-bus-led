@@ -29,31 +29,44 @@ No additional wiring needed.
 
 1. Install [PlatformIO CLI](https://docs.platformio.org/en/latest/core/installation.html)
 
-2. Copy the secrets example and fill in your details:
+2. Build and flash:
    ```bash
-   cp secrets.example.ini secrets.ini
+   pio run -t upload
    ```
 
-3. Edit `secrets.ini` with your Wi-Fi credentials, TfL stop ID, and bus lines:
-   ```ini
-   [env:esp32s3]
-   build_src_flags =
-       -DWIFI_SSID=\"your-wifi-name\"
-       -DWIFI_PASSWORD=\"your-wifi-password\"
-       -DTFL_STOP_ID=\"your-tfl-stop-naptan-id\"
-       -DTRACKED_LINES=\"line1,line2,Nline1\"
-   ```
+3. The device starts a Wi-Fi hotspot called **BusIndicator-XXYYZZ** (the LED pulses blue). Connect to it with your phone or laptop — a setup page opens automatically.
 
-4. Find your stop's NaptanId on the [TfL API](https://api.tfl.gov.uk/). Search for your stop at `https://api.tfl.gov.uk/StopPoint/Search/{query}` and use the `naptanId` field. Set `TRACKED_LINES` to a comma-separated list of bus line names you want to track (e.g. `\"73,390,N73\"`). Line names are case-sensitive and must match the `lineName` field from the TfL API exactly.
+   ![Setup portal](setup.jpg)
 
-5. Build and flash:
-   ```bash
-   pio run -t upload && pio device monitor
-   ```
+4. Enter your Wi-Fi credentials, TfL stop ID, and bus lines. The device saves the config, restarts, and connects to your network.
+
+To find your stop's NaptanId, search the [TfL API](https://api.tfl.gov.uk/) at `https://api.tfl.gov.uk/StopPoint/Search/{query}` and use the `naptanId` field. Line names are case-sensitive and must match the `lineName` field exactly (e.g. `73,390,N73`).
+
+### Compile-time credentials (optional)
+
+If you prefer to bake credentials into the firmware instead of using the setup portal:
+
+```bash
+cp secrets.example.ini secrets.ini
+```
+
+Edit `secrets.ini`:
+```ini
+[env:esp32s3]
+build_src_flags =
+    -DWIFI_SSID=\"your-wifi-name\"
+    -DWIFI_PASSWORD=\"your-wifi-password\"
+    -DTFL_STOP_ID=\"your-tfl-stop-naptan-id\"
+    -DTRACKED_LINES=\"line1,line2,Nline1\"
+```
+
+## Factory Reset
+
+Hold the **BOOT** button for 5 seconds (LED flashes white while held). The device clears its Wi-Fi credentials, restarts, and re-enters the setup portal. Stop ID and tracked lines are preserved.
 
 ## Configuration
 
-Thresholds, LED settings, and poll interval can be adjusted in `include/config.h`.
+All settings (Wi-Fi, stop ID, tracked lines) can be changed at runtime via the [HTTP API](#http-api) without reflashing. Thresholds, LED settings, and poll interval can be adjusted in `include/config.h`.
 
 ## Project Structure
 
@@ -67,8 +80,9 @@ Thresholds, LED settings, and poll interval can be adjusted in `include/config.h
 
 ## Troubleshooting
 
-- **LED stays off** — check that your stop ID is correct and the line names in `TRACKED_LINES` match the TfL API response.
-- **Wi-Fi connection failed** — verify `WIFI_SSID` and `WIFI_PASSWORD` in `secrets.ini`.
+- **LED pulses blue on boot** — the device has no Wi-Fi credentials and is in setup mode. Connect to the BusIndicator hotspot to configure it.
+- **LED stays off** — check that your stop ID is correct and the line names match the TfL API response.
+- **Wi-Fi connection failed** — if the device cannot connect within 10 seconds, it falls back to setup mode automatically.
 - **"No tracked arrivals" in serial** — line names must match the TfL `lineName` field exactly (case-sensitive). Open `https://api.tfl.gov.uk/StopPoint/{your-stop-id}/Arrivals` in a browser to check.
 - **Viewing serial output** — run `pio device monitor` to see live logs from the device.
 
