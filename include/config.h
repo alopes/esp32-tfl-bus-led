@@ -33,6 +33,17 @@ const int THRESHOLD_BLUE   = 10;
 const int THRESHOLD_YELLOW = 5;
 const int THRESHOLD_RED    = 2;
 
+const int TOUCH_PIN_CS  = 15;
+const int TOUCH_PIN_CLK = 18;
+const int TOUCH_PIN_DIN = 16;
+const int TOUCH_PIN_DO  = 17;
+const unsigned long TOUCH_DEBOUNCE_MS = 500;
+
+const int TOUCH_X_MIN = 200;
+const int TOUCH_X_MAX = 3800;
+const int TOUCH_Y_MIN = 200;
+const int TOUCH_Y_MAX = 3800;
+
 const int MAX_ARRIVALS  = 8;
 const int MAX_DISPLAY_ROWS = 7;
 const unsigned long DISPLAY_REFRESH_MS = 1000;

@@ -8,6 +8,8 @@
 #include <WebServer.h>
 #include <Preferences.h>
 #include <TFT_eSPI.h>
+#include <XPT2046_Touchscreen.h>
+#include <qrcode.h>
 #include "config.h"
 
 // ─── Runtime config (loaded from NVS; compile-time values are fallback defaults) ───
@@ -17,6 +19,8 @@ char cfgWifiPassword[64]  = "";
 char cfgStopId[64]        = "";
 char cfgTrackedLines[128] = "";
 char cfgApiKey[33]        = "";
+bool cfgShowStatusBar     = true;
+uint8_t cfgTheme          = 0;
 
 Preferences prefs;
 WebServer    server(80);
@@ -53,6 +57,13 @@ ArrivalsData arrivals = {};
 TFT_eSPI tft = TFT_eSPI();
 TFT_eSprite rowSprite = TFT_eSprite(&tft);
 
+SPIClass touchSPI(HSPI);
+XPT2046_Touchscreen ts(TOUCH_PIN_CS);
+
+enum Screen { SCREEN_DEPARTURES, SCREEN_INFO };
+Screen currentScreen = SCREEN_DEPARTURES;
+unsigned long lastTouchTime = 0;
+
 // ─── NVS helpers ───────────────────────────────────────────────────────────
 
 void generateApiKey() {
@@ -61,6 +72,30 @@ void generateApiKey() {
         snprintf(cfgApiKey + i * 2, 3, "%02x", b);
     }
 }
+
+struct Theme {
+    uint16_t headerBg;
+    uint16_t headerTxt;
+    uint16_t bg;
+    uint16_t rowAlt;
+    uint16_t text;
+    uint16_t textDim;
+    uint16_t barRed;
+    uint16_t barYellow;
+    uint16_t barBlue;
+    uint16_t barGrey;
+    uint16_t qrFg;
+    uint16_t qrBg;
+};
+
+const Theme THEME_CLASSIC   = { 0x01D1, 0xFFFF, 0x18E3, 0x2124, 0xFFFF, 0xAD55, 0xF800, 0xFFE0, 0x001F, 0x7BEF, TFT_BLACK, TFT_WHITE };
+const Theme THEME_DARK  = { 0x2104, 0xFFFF, 0x0000, 0x18C3, 0xFFFF, 0x8410, 0xF800, 0xFFE0, 0x001F, 0x7BEF, TFT_WHITE, 0x0000 };
+const Theme THEME_LIGHT = { 0x01D1, 0xFFFF, 0xFFFF, 0xE71C, 0x0000, 0x6B6D, 0xF800, 0xFFE0, 0x001F, 0x7BEF, TFT_BLACK, TFT_WHITE };
+
+const Theme* themes[] = { &THEME_CLASSIC, &THEME_DARK, &THEME_LIGHT };
+const char* themeNames[] = { "classic", "dark", "light" };
+constexpr uint8_t THEME_COUNT = sizeof(themes) / sizeof(themes[0]);
+const Theme* theme = &THEME_CLASSIC;
 
 void loadConfig() {
     if (!prefs.begin("busled", false)) {
@@ -89,6 +124,10 @@ void loadConfig() {
     loadStr(prefs, "stopId",       cfgStopId,         sizeof(cfgStopId),        TFL_STOP_ID);
     loadStr(prefs, "trackedLines", cfgTrackedLines,   sizeof(cfgTrackedLines),  TRACKED_LINES);
     loadStr(prefs, "apiKey",       cfgApiKey,         sizeof(cfgApiKey),        "");
+    cfgShowStatusBar = prefs.getBool("showStatusBar", true);
+    cfgTheme = prefs.getUChar("theme", 0);
+    if (cfgTheme >= THEME_COUNT) cfgTheme = 0;
+    theme = themes[cfgTheme];
 
     if (cfgApiKey[0] == '\0') {
         generateApiKey();
@@ -202,6 +241,191 @@ label{font-size:.75rem;color:#999;display:block;margin-top:.8rem}
 <p>Configuration saved. The device will now restart and connect to your Wi-Fi network.</p>
 <label>API Key (save this — you'll need it to change settings)</label><div class="key">%s</div>
 <p>This page will stop responding shortly.</p></div></body></html>)rawhtml";
+
+// ─── Settings page (served in normal mode) ───────────────────────────────
+
+static const char SETTINGS_PAGE[] PROGMEM = R"rawhtml(
+<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bus Indicator Settings</title><style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Johnston','Gill Sans',system-ui,sans-serif;background:#003888;color:#fff;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:1rem}
+.card{background:#fff;border-radius:8px;padding:2rem;width:100%;max-width:420px;box-shadow:0 4px 24px rgba(0,0,0,.2);color:#1c3f94}
+.roundel{width:48px;height:48px;margin:0 auto 1rem;position:relative}
+.roundel .bar{position:absolute;top:50%;left:0;width:100%;height:12px;margin-top:-6px;background:#dc241f;border-radius:2px}
+.roundel .ring{width:48px;height:48px;border:5px solid #dc241f;border-radius:50%;position:relative}
+h1{font-size:1.2rem;text-align:center;margin-bottom:.2rem;color:#1c3f94;font-weight:700;letter-spacing:-.02em}
+p.sub{font-size:.8rem;color:#666;margin-bottom:1.5rem;text-align:center}
+label{display:block;font-size:.8rem;margin-bottom:.3rem;color:#1c3f94;font-weight:600}
+input,select{width:100%;padding:.55rem;border:2px solid #ccd6e0;border-radius:4px;background:#f6f8fa;color:#1c3f94;font-size:.9rem;margin-bottom:.8rem;font-family:inherit}
+select{cursor:pointer}select option{background:#fff;color:#1c3f94}
+input:focus,select:focus{outline:none;border-color:#003888}
+button{width:100%;padding:.65rem;background:#dc241f;color:#fff;border:none;border-radius:4px;font-size:.95rem;cursor:pointer;margin-top:.3rem;font-family:inherit;font-weight:600;letter-spacing:.02em}
+button:hover{background:#b71c1c}
+.btn-sm{width:auto;display:inline-block;padding:.35rem .7rem;font-size:.75rem;margin:0 0 .8rem 0;background:#fff;color:#003888;border:2px solid #003888;font-weight:600}
+.btn-sm:hover{background:#003888;color:#fff}
+.sep{border:none;border-top:1px solid #e0e4e8;margin:1rem 0}
+.section{display:none}
+.msg{font-size:.8rem;margin:.4rem 0;padding:.35rem .5rem;border-radius:4px;display:none}
+.msg.ok{display:block;background:#e8f5e9;color:#2e7d32}
+.msg.err{display:block;background:#ffebee;color:#c62828}
+.toggle{display:flex;align-items:center;gap:.6rem;margin-bottom:.8rem}
+.toggle input{width:auto;margin:0}
+.toggle label{margin:0}
+.footer{font-size:.7rem;color:#999;text-align:center;margin-top:1rem}
+</style></head><body><div class="card">
+<div class="roundel"><div class="ring"></div><div class="bar"></div></div>
+<h1>Bus Indicator Settings</h1>
+<p class="sub">Configure your bus departure display.</p>
+
+<div id="auth">
+<label for="apiKey">API Key</label>
+<input id="apiKey" type="password" placeholder="Enter your API key" autocomplete="off">
+<div id="authMsg" class="msg"></div>
+<button onclick="unlock()">Unlock</button>
+</div>
+
+<div id="sections" class="section">
+
+<hr class="sep">
+<label><b>Device</b></label>
+<label for="devName">Device Name</label>
+<input id="devName" maxlength="63" placeholder="e.g. Kitchen">
+<div id="devMsg" class="msg"></div>
+<button onclick="saveDevice()">Save Device</button>
+
+<hr class="sep">
+<label><b>Display</b></label>
+<label for="themeSelect">Theme</label>
+<select id="themeSelect"><option value="classic">Classic</option><option value="dark">Dark</option><option value="light">Light</option></select>
+<div class="toggle">
+<input type="checkbox" id="showBar" checked>
+<label for="showBar">Show status bar (Wi-Fi + update timer)</label>
+</div>
+<div id="dispMsg" class="msg"></div>
+<button onclick="saveDisplay()">Save Display</button>
+
+<hr class="sep">
+<label><b>Tracking</b></label>
+<label for="stopId">TfL Stop ID</label>
+<input id="stopId" maxlength="63" placeholder="e.g. 490008660N">
+<label for="busLines">Bus Lines (comma-separated)</label>
+<input id="busLines" maxlength="127" placeholder="e.g. 55,243,N55">
+<div id="trackMsg" class="msg"></div>
+<button onclick="saveTracking()">Save Tracking</button>
+
+<hr class="sep">
+<label><b>Wi-Fi</b></label>
+<label for="wifiSel">Network</label>
+<select id="wifiSel" onchange="toggleManual()"><option value="">Scanning...</option></select>
+<input id="wifiSsid" maxlength="63" placeholder="Enter network name" style="display:none">
+<button type="button" class="btn-sm" onclick="doScan()">Rescan networks</button>
+<label for="wifiPass">Password</label>
+<input id="wifiPass" type="password" maxlength="63">
+<div id="wifiMsg" class="msg"></div>
+<button onclick="saveWifi()">Save Wi-Fi</button>
+
+</div>
+
+<div id="footerInfo" class="footer"></div>
+</div>
+<script>
+var K='';
+function key(){return K||sessionStorage.getItem('apiKey')||'';}
+function hdr(){return{'Content-Type':'application/json','X-Api-Key':key()};}
+function msg(id,txt,ok){var e=document.getElementById(id);e.textContent=txt;e.className='msg '+(ok?'ok':'err');setTimeout(function(){e.style.display='none';e.className='msg';},4000);e.style.display='block';}
+
+function unlock(){
+K=document.getElementById('apiKey').value.trim();
+if(!K){msg('authMsg','Please enter an API key.',false);return;}
+sessionStorage.setItem('apiKey',K);
+fetch('/config/device',{headers:{'X-Api-Key':K}}).then(function(r){
+if(!r.ok)throw new Error('Invalid API key');return r.json();
+}).then(function(d){
+document.getElementById('devName').value=d.deviceName||'';
+if(d.wifi&&d.wifi.ssid){
+document.getElementById('wifiSsid').value=d.wifi.ssid;
+document.getElementById('wifiSsid').style.display='';
+var sel=document.getElementById('wifiSel');
+var o=document.createElement('option');o.value=d.wifi.ssid;o.textContent=d.wifi.ssid+' (current)';o.selected=true;
+sel.insertBefore(o,sel.firstChild);
+}
+return fetch('/config/tracking',{headers:{'X-Api-Key':K}});
+}).then(function(r){return r.json();}).then(function(d){
+if(d.stops&&d.stops.length>0){
+document.getElementById('stopId').value=d.stops[0].stopId||'';
+document.getElementById('busLines').value=(d.stops[0].lines||[]).join(',');
+}
+return fetch('/config/display',{headers:{'X-Api-Key':K}});
+}).then(function(r){return r.json();}).then(function(d){
+document.getElementById('showBar').checked=d.showStatusBar!==false;
+if(d.theme)document.getElementById('themeSelect').value=d.theme;
+return fetch('/status',{headers:{'X-Api-Key':K}});
+}).then(function(r){return r.json();}).then(function(d){
+var ip=d.wifi?d.wifi.ip:'?';
+document.getElementById('footerInfo').textContent='IP: '+ip;
+document.getElementById('auth').style.display='none';
+document.getElementById('sections').style.display='block';
+doScan();
+}).catch(function(e){msg('authMsg',e.message||'Failed to connect',false);sessionStorage.removeItem('apiKey');K='';});
+}
+
+function saveDevice(){
+fetch('/config/device',{method:'POST',headers:hdr(),body:JSON.stringify({deviceName:document.getElementById('devName').value})})
+.then(function(r){if(!r.ok)throw r;msg('devMsg','Saved.',true);}).catch(function(){msg('devMsg','Failed to save.',false);});
+}
+
+function saveDisplay(){
+fetch('/config/display',{method:'POST',headers:hdr(),body:JSON.stringify({showStatusBar:document.getElementById('showBar').checked,theme:document.getElementById('themeSelect').value})})
+.then(function(r){if(!r.ok)throw r;msg('dispMsg','Saved.',true);}).catch(function(){msg('dispMsg','Failed to save.',false);});
+}
+
+function saveTracking(){
+var sid=document.getElementById('stopId').value.trim();
+var lines=document.getElementById('busLines').value.trim().split(',').map(function(s){return s.trim();}).filter(Boolean);
+var body={stops:sid?[{stopId:sid,lines:lines}]:[]};
+fetch('/config/tracking',{method:'POST',headers:hdr(),body:JSON.stringify(body)})
+.then(function(r){if(!r.ok)throw r;msg('trackMsg','Saved.',true);}).catch(function(){msg('trackMsg','Failed to save.',false);});
+}
+
+function saveWifi(){
+var ssid=document.getElementById('wifiSsid').value.trim()||document.getElementById('wifiSel').value;
+if(!ssid){msg('wifiMsg','Please select or enter a network.',false);return;}
+var pass=document.getElementById('wifiPass').value;
+fetch('/config/device',{method:'POST',headers:hdr(),body:JSON.stringify({wifi:{ssid:ssid,password:pass}})})
+.then(function(r){if(!r.ok)throw r;msg('wifiMsg','Saved. Device will reconnect.',true);}).catch(function(){msg('wifiMsg','Failed to save.',false);});
+}
+
+function bars(rssi){if(rssi>=-50)return'\u2588\u2588\u2588\u2588';if(rssi>=-60)return'\u2588\u2588\u2588\u2591';if(rssi>=-70)return'\u2588\u2588\u2591\u2591';return'\u2588\u2591\u2591\u2591';}
+
+function toggleManual(){
+var sel=document.getElementById('wifiSel'),inp=document.getElementById('wifiSsid');
+if(sel.value===''){var isManual=sel.options[sel.selectedIndex]&&sel.options[sel.selectedIndex].dataset.manual;
+if(isManual){inp.style.display='';inp.value='';inp.focus();return;}}
+inp.style.display='none';inp.value=sel.value;}
+
+function doScan(){
+var sel=document.getElementById('wifiSel');
+var cur=document.getElementById('wifiSsid').value;
+sel.innerHTML='<option value="">Scanning...</option>';
+fetch('/scan').then(function(r){return r.json();}).then(function(d){
+sel.innerHTML='';var nets=d.networks||[];
+if(nets.length===0){sel.innerHTML='<option value="">No networks found</option>';document.getElementById('wifiSsid').style.display='';return;}
+for(var i=0;i<nets.length;i++){var o=document.createElement('option');o.value=nets[i].ssid;o.textContent=nets[i].ssid+(nets[i].open?' (open)':'')+' '+bars(nets[i].rssi);
+if(nets[i].ssid===cur)o.selected=true;sel.appendChild(o);}
+var m=document.createElement('option');m.value='';m.dataset.manual='1';m.textContent='Other (enter manually)';sel.appendChild(m);
+if(!cur)document.getElementById('wifiSsid').value=sel.value;
+}).catch(function(){sel.innerHTML='<option value="">Scan failed</option>';document.getElementById('wifiSsid').style.display='';});
+}
+
+window.onload=function(){
+var p=new URLSearchParams(window.location.search);
+var qk=p.get('key');
+if(qk){document.getElementById('apiKey').value=qk;unlock();history.replaceState(null,'','/');return;}
+var saved=sessionStorage.getItem('apiKey');
+if(saved){document.getElementById('apiKey').value=saved;unlock();}
+};
+</script>
+</body></html>)rawhtml";
 
 // ─── Provisioning LED feedback ────────────────────────────────────────────
 
@@ -553,17 +777,6 @@ int fetchArrivals() {
 
 // ─── TFT display ───────────────────────────────────────────────────────────
 
-const uint16_t COL_TFL_BLUE   = 0x01D1;  // #003888
-const uint16_t COL_HEADER_TXT = 0xFFFF;
-const uint16_t COL_BG         = 0x18E3;  // #1a1c2c
-const uint16_t COL_ROW_ALT    = 0x2124;  // #212428
-const uint16_t COL_TEXT       = 0xFFFF;
-const uint16_t COL_TEXT_DIM   = 0xAD55;  // #aaaaaa
-const uint16_t COL_BAR_RED    = 0xF800;
-const uint16_t COL_BAR_YELLOW = 0xFFE0;
-const uint16_t COL_BAR_BLUE   = 0x001F;
-const uint16_t COL_BAR_GREY   = 0x7BEF;
-
 void initDisplay() {
     tft.init();
     tft.setRotation(0);
@@ -572,30 +785,60 @@ void initDisplay() {
     rowSprite.createSprite(240, 40);
 }
 
+void initTouch() {
+    touchSPI.begin(TOUCH_PIN_CLK, TOUCH_PIN_DO, TOUCH_PIN_DIN, TOUCH_PIN_CS);
+    if (!ts.begin(touchSPI)) {
+        Serial.println("Touchscreen init failed — check XPT2046 wiring");
+    }
+}
+
+struct TouchPoint { int x; int y; bool valid; };
+
+TouchPoint readTouch() {
+    TouchPoint tp = {0, 0, false};
+    if (!ts.touched()) return tp;
+    TS_Point raw = ts.getPoint();
+    tp.x = constrain(map(raw.y, TOUCH_Y_MIN, TOUCH_Y_MAX, 0, 239), 0, 239);
+    tp.y = constrain(map(raw.x, TOUCH_X_MAX, TOUCH_X_MIN, 0, 319), 0, 319);
+    tp.valid = true;
+    return tp;
+}
+
 uint16_t thresholdColour(int minutes) {
-    if (minutes < THRESHOLD_RED)    return COL_BAR_RED;
-    if (minutes < THRESHOLD_YELLOW) return COL_BAR_RED;
-    if (minutes < THRESHOLD_BLUE)   return COL_BAR_YELLOW;
-    if (minutes < THRESHOLD_OFF)    return COL_BAR_BLUE;
-    return COL_BAR_GREY;
+    if (minutes < THRESHOLD_YELLOW) return theme->barRed;
+    if (minutes < THRESHOLD_BLUE)   return theme->barYellow;
+    if (minutes < THRESHOLD_OFF)    return theme->barBlue;
+    return theme->barGrey;
 }
 
 void renderStatusBar();
 
 void renderArrivals() {
     // Header bar (40px)
-    rowSprite.fillSprite(COL_TFL_BLUE);
-    rowSprite.setTextColor(COL_HEADER_TXT, COL_TFL_BLUE);
+    rowSprite.fillSprite(theme->headerBg);
+    rowSprite.setTextColor(theme->headerTxt, theme->headerBg);
     rowSprite.setTextDatum(ML_DATUM);
     rowSprite.setFreeFont(&FreeSansBold12pt7b);
     const char* title = (cfgDeviceName[0] != '\0') ? cfgDeviceName : "Bus Departures";
     rowSprite.drawString(title, 10, 22);
+
+    // Settings cog icon
+    const int cogX = 222, cogY = 20, cogR = 7;
+    rowSprite.fillCircle(cogX, cogY, cogR, theme->headerTxt);
+    rowSprite.fillCircle(cogX, cogY, 3, theme->headerBg);
+    for (int i = 0; i < 8; i++) {
+        float a = i * PI / 4.0f;
+        int tx = cogX + (int)(cos(a) * (cogR + 3));
+        int ty = cogY + (int)(sin(a) * (cogR + 3));
+        rowSprite.fillCircle(tx, ty, 2, theme->headerTxt);
+    }
+
     rowSprite.pushSprite(0, 0);
 
     // Column headers (24px, reuse 40px sprite — extra is covered by rows below)
-    rowSprite.fillSprite(COL_BG);
+    rowSprite.fillSprite(theme->bg);
     rowSprite.setFreeFont(&FreeSans9pt7b);
-    rowSprite.setTextColor(COL_TEXT_DIM, COL_BG);
+    rowSprite.setTextColor(theme->textDim, theme->bg);
     rowSprite.setTextDatum(TL_DATUM);
     rowSprite.drawString("Line", 14, 4);
     rowSprite.drawString("Destination", 70, 4);
@@ -609,12 +852,12 @@ void renderArrivals() {
     if (arrivals.count == 0) {
         // Fill the entire data area with background
         for (int i = 0; i < MAX_DISPLAY_ROWS; i++) {
-            rowSprite.fillSprite(COL_BG);
+            rowSprite.fillSprite(theme->bg);
             rowSprite.pushSprite(0, rowY + i * rowH);
         }
         // Overlay "no departures" message in the middle row
-        rowSprite.fillSprite(COL_BG);
-        rowSprite.setTextColor(COL_TEXT_DIM, COL_BG);
+        rowSprite.fillSprite(theme->bg);
+        rowSprite.setTextColor(theme->textDim, theme->bg);
         rowSprite.setTextDatum(MC_DATUM);
         rowSprite.setFreeFont(&FreeSans9pt7b);
         rowSprite.drawString("No tracked departures", 120, 16);
@@ -622,7 +865,7 @@ void renderArrivals() {
     } else {
         int rows = min(arrivals.count, MAX_DISPLAY_ROWS);
         for (int i = 0; i < MAX_DISPLAY_ROWS; i++) {
-            uint16_t rowBg = (i % 2 == 1) ? COL_ROW_ALT : COL_BG;
+            uint16_t rowBg = (i % 2 == 1) ? theme->rowAlt : theme->bg;
             rowSprite.fillSprite(rowBg);
 
             if (i < rows) {
@@ -632,7 +875,7 @@ void renderArrivals() {
                 uint16_t barCol = thresholdColour(a.displayMinutes);
                 rowSprite.fillRect(0, 0, 4, rowH, barCol);
 
-                rowSprite.setTextColor(COL_TEXT, rowBg);
+                rowSprite.setTextColor(theme->text, rowBg);
                 rowSprite.setTextDatum(ML_DATUM);
 
                 // Line number (bold)
@@ -661,13 +904,17 @@ void renderArrivals() {
         }
     }
 
-    renderStatusBar();
+    if (cfgShowStatusBar) {
+        renderStatusBar();
+    } else {
+        tft.fillRect(0, 288, 240, 32, theme->bg);
+    }
 }
 
 void renderStatusBar() {
-    rowSprite.fillSprite(COL_TFL_BLUE);
+    rowSprite.fillSprite(theme->headerBg);
     rowSprite.setFreeFont(&FreeSans9pt7b);
-    rowSprite.setTextColor(COL_HEADER_TXT, COL_TFL_BLUE);
+    rowSprite.setTextColor(theme->headerTxt, theme->headerBg);
     rowSprite.setTextDatum(ML_DATUM);
 
     const char* wifiStatus = (WiFi.status() == WL_CONNECTED) ? "WiFi: OK" : "WiFi: --";
@@ -683,6 +930,107 @@ void renderStatusBar() {
         rowSprite.drawString("No data yet", 230, 16);
     }
     rowSprite.pushSprite(0, 288);
+}
+
+void renderInfoScreen() {
+    tft.fillScreen(theme->bg);
+
+    // Header with back arrow
+    rowSprite.fillSprite(theme->headerBg);
+    rowSprite.setTextColor(theme->headerTxt, theme->headerBg);
+    rowSprite.setFreeFont(&FreeSansBold12pt7b);
+
+    // Back chevron at left
+    const int ax = 14, ay = 20;
+    rowSprite.drawLine(ax, ay, ax + 8, ay - 8, theme->headerTxt);
+    rowSprite.drawLine(ax, ay, ax + 8, ay + 8, theme->headerTxt);
+    rowSprite.drawLine(ax + 1, ay, ax + 9, ay - 8, theme->headerTxt);
+    rowSprite.drawLine(ax + 1, ay, ax + 9, ay + 8, theme->headerTxt);
+
+    rowSprite.setTextDatum(MC_DATUM);
+    rowSprite.drawString("Device Info", 120, 22);
+    rowSprite.pushSprite(0, 0);
+
+    // QR code: encode device URL
+    char url[96];
+    snprintf(url, sizeof(url), "http://%s/?key=%s", WiFi.localIP().toString().c_str(), cfgApiKey);
+
+    QRCode qrcode;
+    uint8_t qrcodeData[qrcode_getBufferSize(4)];
+    qrcode_initText(&qrcode, qrcodeData, 4, ECC_LOW, url);
+
+    const int modSize = 3;
+    const int quietZone = 2;
+    const int totalMods = qrcode.size + quietZone * 2;
+    const int qrPixels = totalMods * modSize;
+    const int qrX = (240 - qrPixels) / 2;
+    const int qrY = 48;
+
+    // QR background + quiet zone
+    tft.fillRect(qrX, qrY, qrPixels, qrPixels, theme->qrBg);
+
+    // Draw QR modules
+    for (uint8_t y = 0; y < qrcode.size; y++) {
+        for (uint8_t x = 0; x < qrcode.size; x++) {
+            if (qrcode_getModule(&qrcode, x, y)) {
+                tft.fillRect(
+                    qrX + (x + quietZone) * modSize,
+                    qrY + (y + quietZone) * modSize,
+                    modSize, modSize, theme->qrFg
+                );
+            }
+        }
+    }
+
+    // Label below QR
+    int labelY = qrY + qrPixels + 4;
+    tft.setTextDatum(TC_DATUM);
+    tft.setFreeFont(&FreeSans9pt7b);
+    tft.setTextColor(theme->textDim, theme->bg);
+    tft.fillRect(0, labelY, 240, 20, theme->bg);
+    tft.drawString("Scan to open settings", 120, labelY);
+
+    // Compact info rows
+    const char* labels[] = {"Host", "Stop", "Lines", "Key"};
+    char values[4][64];
+
+    if (cfgDeviceName[0] != '\0') {
+        snprintf(values[0], sizeof(values[0]), "busled-%.40s.local", cfgDeviceName);
+        for (char* p = values[0] + 7; *p && *p != '.'; p++) {
+            char c = (*p == ' ') ? '-' : tolower((unsigned char)*p);
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-')) c = '-';
+            *p = c;
+        }
+    } else {
+        uint8_t mac[6];
+        WiFi.macAddress(mac);
+        snprintf(values[0], sizeof(values[0]), "busled-%02x%02x%02x.local", mac[3], mac[4], mac[5]);
+    }
+
+    strncpy(values[1], cfgStopId[0] ? cfgStopId : "Not set", sizeof(values[1]) - 1);
+    values[1][sizeof(values[1]) - 1] = '\0';
+    strncpy(values[2], cfgTrackedLines[0] ? cfgTrackedLines : "Not set", sizeof(values[2]) - 1);
+    values[2][sizeof(values[2]) - 1] = '\0';
+    snprintf(values[3], sizeof(values[3]), "%.16s...", cfgApiKey);
+
+    int rowY = labelY + 20;
+    const int rowH = 24;
+
+    for (int i = 0; i < 4; i++) {
+        uint16_t bg = (i % 2 == 1) ? theme->rowAlt : theme->bg;
+        tft.fillRect(0, rowY, 240, rowH, bg);
+        tft.setTextDatum(ML_DATUM);
+        tft.setFreeFont(&FreeSans9pt7b);
+        tft.setTextColor(theme->textDim, bg);
+        tft.drawString(labels[i], 8, rowY + rowH / 2);
+        tft.setTextColor(theme->text, bg);
+        tft.drawString(values[i], 70, rowY + rowH / 2);
+        rowY += rowH;
+    }
+
+    if (rowY < 320) {
+        tft.fillRect(0, rowY, 240, 320 - rowY, theme->bg);
+    }
 }
 
 // ─── LED logic ─────────────────────────────────────────────────────────────
@@ -796,6 +1144,10 @@ void handlePostConfigDevice() {
         return;
     }
     server.send(200, "application/json", "{}");
+
+    if (currentScreen == SCREEN_DEPARTURES) {
+        renderArrivals();
+    }
 
     if (wifiChanged) {
         delay(100);
@@ -935,14 +1287,97 @@ void handleGetStatus() {
     server.send(200, "application/json", body);
 }
 
+void handleGetSettingsPage() {
+    server.send_P(200, "text/html", SETTINGS_PAGE);
+}
+
+void handleGetConfigDisplay() {
+    JsonDocument doc;
+    doc["showStatusBar"] = cfgShowStatusBar;
+    doc["theme"] = themeNames[cfgTheme];
+    String body;
+    serializeJson(doc, body);
+    server.send(200, "application/json", body);
+}
+
+void handlePostConfigDisplay() {
+    if (!requireApiKey()) return;
+    if (!server.hasArg("plain")) {
+        server.send(400, "application/json", "{\"error\":\"Missing body\"}");
+        return;
+    }
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, server.arg("plain"));
+    if (err) {
+        server.send(400, "application/json", "{\"error\":\"Invalid JSON\"}");
+        return;
+    }
+
+    bool newShowStatusBar = cfgShowStatusBar;
+    uint8_t newTheme = cfgTheme;
+
+    if (!doc["showStatusBar"].isNull()) {
+        if (!doc["showStatusBar"].is<bool>()) {
+            server.send(400, "application/json", "{\"error\":\"showStatusBar must be a boolean\"}");
+            return;
+        }
+        newShowStatusBar = doc["showStatusBar"].as<bool>();
+    }
+
+    if (!doc["theme"].isNull()) {
+        if (!doc["theme"].is<const char*>()) {
+            server.send(400, "application/json", "{\"error\":\"theme must be a string\"}");
+            return;
+        }
+        const char* t = doc["theme"].as<const char*>();
+        bool found = false;
+        for (uint8_t i = 0; i < THEME_COUNT; i++) {
+            if (strcmp(t, themeNames[i]) == 0) {
+                newTheme = i;
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            server.send(400, "application/json", "{\"error\":\"Unknown theme\"}");
+            return;
+        }
+    }
+
+    if (!prefs.begin("busled", false)) {
+        server.send(500, "application/json", "{\"error\":\"NVS open failed\"}");
+        return;
+    }
+    prefs.putBool("showStatusBar", newShowStatusBar);
+    prefs.putUChar("theme", newTheme);
+    prefs.end();
+
+    cfgShowStatusBar = newShowStatusBar;
+    cfgTheme = newTheme;
+    theme = themes[newTheme];
+
+    server.send(200, "application/json", "{}");
+
+    if (currentScreen == SCREEN_DEPARTURES) {
+        renderArrivals();
+    } else if (currentScreen == SCREEN_INFO) {
+        renderInfoScreen();
+    }
+}
+
 void setupServer() {
     const char* headerKeys[] = {"X-Api-Key"};
     server.collectHeaders(headerKeys, 1);
 
+    server.on("/",                HTTP_GET,  handleGetSettingsPage);
+    server.on("/scan",            HTTP_GET,  handleWifiScan);
     server.on("/config/device",   HTTP_GET,  handleGetConfigDevice);
     server.on("/config/device",   HTTP_POST, handlePostConfigDevice);
     server.on("/config/tracking", HTTP_GET,  handleGetConfigTracking);
     server.on("/config/tracking", HTTP_POST, handlePostConfigTracking);
+    server.on("/config/display",  HTTP_GET,  handleGetConfigDisplay);
+    server.on("/config/display",  HTTP_POST, handlePostConfigDisplay);
     server.on("/status",          HTTP_GET,  handleGetStatus);
     server.begin();
     Serial.println("HTTP server started on port 80");
@@ -967,6 +1402,7 @@ void setup() {
     Serial.println("LED self-test complete");
 
     initDisplay();
+    initTouch();
 
     loadConfig();
     Serial.printf("API key: %s\n", cfgApiKey);
@@ -1014,9 +1450,21 @@ void loop() {
 
     unsigned long now = millis();
 
+    TouchPoint tp = readTouch();
+    if (tp.valid && now - lastTouchTime > TOUCH_DEBOUNCE_MS) {
+        lastTouchTime = now;
+        if (currentScreen == SCREEN_DEPARTURES && tp.x >= 200 && tp.y <= 40) {
+            currentScreen = SCREEN_INFO;
+            renderInfoScreen();
+        } else if (currentScreen == SCREEN_INFO && tp.x <= 60 && tp.y <= 40) {
+            currentScreen = SCREEN_DEPARTURES;
+            renderArrivals();
+        }
+    }
+
     if (now - lastPoll >= POLL_INTERVAL_MS || lastPoll == 0) {
         lastPoll = now;
-        if (fetchArrivals() > 0) {
+        if (fetchArrivals() > 0 && currentScreen == SCREEN_DEPARTURES) {
             renderArrivals();
         }
     }
@@ -1024,22 +1472,24 @@ void loop() {
     if (now - lastDisplayRefresh >= DISPLAY_REFRESH_MS) {
         lastDisplayRefresh = now;
 
-        if (arrivals.count > 0) {
-            unsigned long elapsed = now - arrivals.fetchedAtMillis;
-            bool changed = false;
-            for (int i = 0; i < arrivals.count; i++) {
-                int remaining = arrivals.entries[i].timeToStationSec - (int)(elapsed / 1000);
-                int newMin = (remaining > 0) ? remaining / 60 : 0;
-                if (newMin != arrivals.entries[i].displayMinutes) {
-                    arrivals.entries[i].displayMinutes = newMin;
-                    changed = true;
+        if (currentScreen == SCREEN_DEPARTURES) {
+            if (arrivals.count > 0) {
+                unsigned long elapsed = now - arrivals.fetchedAtMillis;
+                bool changed = false;
+                for (int i = 0; i < arrivals.count; i++) {
+                    int remaining = arrivals.entries[i].timeToStationSec - (int)(elapsed / 1000);
+                    int newMin = (remaining > 0) ? remaining / 60 : 0;
+                    if (newMin != arrivals.entries[i].displayMinutes) {
+                        arrivals.entries[i].displayMinutes = newMin;
+                        changed = true;
+                    }
                 }
+                currentMinutes = arrivals.entries[0].displayMinutes;
+                if (changed) renderArrivals();
             }
-            currentMinutes = arrivals.entries[0].displayMinutes;
-            if (changed) renderArrivals();
         }
 
-        renderStatusBar();
+        if (currentScreen == SCREEN_DEPARTURES && cfgShowStatusBar) renderStatusBar();
     }
 
     unsigned long ledInterval = (currentMinutes >= 0 && currentMinutes < THRESHOLD_RED) ? 500 : 1000;
