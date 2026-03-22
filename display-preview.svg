@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 320" width="240" height="320" font-family="'Helvetica Neue', Arial, sans-serif">
+  <!-- Background -->
+  <rect width="240" height="320" rx="4" fill="#1a1c2c"/>
+
+  <!-- Header bar -->
+  <rect width="240" height="40" fill="#003888" rx="4"/>
+  <rect y="36" width="240" height="4" fill="#003888"/>
+  <text x="10" y="26" fill="#ffffff" font-size="16" font-weight="bold">Bus Departures</text>
+
+  <!-- Column headers -->
+  <text x="14" y="56" fill="#aaaaaa" font-size="11">Line</text>
+  <text x="70" y="56" fill="#aaaaaa" font-size="11">Destination</text>
+  <text x="230" y="56" fill="#aaaaaa" font-size="11" text-anchor="end">Min</text>
+
+  <!-- Row 1 — red (< 2 min) -->
+  <rect y="64" width="240" height="32" fill="#1a1c2c"/>
+  <rect y="64" width="4" height="32" fill="#f80000"/>
+  <text x="14" y="84" fill="#ffffff" font-size="12" font-weight="bold">55</text>
+  <text x="70" y="84" fill="#ffffff" font-size="12">Clapton Pond</text>
+  <text x="230" y="84" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="end">1</text>
+
+  <!-- Row 2 — red (2-4 min) -->
+  <rect y="96" width="240" height="32" fill="#212428"/>
+  <rect y="96" width="4" height="32" fill="#f80000"/>
+  <text x="14" y="116" fill="#ffffff" font-size="12" font-weight="bold">243</text>
+  <text x="70" y="116" fill="#ffffff" font-size="12">Wood Green</text>
+  <text x="230" y="116" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="end">3</text>
+
+  <!-- Row 3 — yellow (5-9 min) -->
+  <rect y="128" width="240" height="32" fill="#1a1c2c"/>
+  <rect y="128" width="4" height="32" fill="#ffe000"/>
+  <text x="14" y="148" fill="#ffffff" font-size="12" font-weight="bold">55</text>
+  <text x="70" y="148" fill="#ffffff" font-size="12">Clapton Pond</text>
+  <text x="230" y="148" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="end">7</text>
+
+  <!-- Row 4 — blue (10-14 min) -->
+  <rect y="160" width="240" height="32" fill="#212428"/>
+  <rect y="160" width="4" height="32" fill="#001ff8"/>
+  <text x="14" y="180" fill="#ffffff" font-size="12" font-weight="bold">N55</text>
+  <text x="70" y="180" fill="#ffffff" font-size="12">Oxford Circus</text>
+  <text x="230" y="180" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="end">11</text>
+
+  <!-- Row 5 — grey (>= 15 min) -->
+  <rect y="192" width="240" height="32" fill="#1a1c2c"/>
+  <rect y="192" width="4" height="32" fill="#7b7b7b"/>
+  <text x="14" y="212" fill="#ffffff" font-size="12" font-weight="bold">243</text>
+  <text x="70" y="212" fill="#ffffff" font-size="12">Wood Green</text>
+  <text x="230" y="212" fill="#ffffff" font-size="13" font-weight="bold" text-anchor="end">18</text>
+
+  <!-- Empty rows -->
+  <rect y="224" width="240" height="32" fill="#212428"/>
+  <rect y="256" width="240" height="32" fill="#1a1c2c"/>
+
+  <!-- Status bar -->
+  <rect y="288" width="240" height="32" fill="#003888" rx="4"/>
+  <rect y="288" width="240" height="4" fill="#003888"/>
+  <text x="10" y="308" fill="#ffffff" font-size="11">WiFi: OK</text>
+  <text x="230" y="308" fill="#ffffff" font-size="11" text-anchor="end">Updated: 4s ago</text>
+</svg>

@@ -7,6 +7,7 @@
 #include <ArduinoJson.h>
 #include <WebServer.h>
 #include <Preferences.h>
+#include <TFT_eSPI.h>
 #include "config.h"
 
 // ─── Runtime config (loaded from NVS; compile-time values are fallback defaults) ───
@@ -31,7 +32,26 @@ char currentDest[32] = "";
 bool flashState      = false;
 unsigned long lastPoll      = 0;
 unsigned long lastLedUpdate = 0;
+unsigned long lastDisplayRefresh = 0;
 int           currentMinutes = -1;
+
+struct BusArrival {
+    char line[8];
+    char destination[48];
+    int  timeToStationSec;
+    int  displayMinutes;
+};
+
+struct ArrivalsData {
+    BusArrival entries[MAX_ARRIVALS];
+    int count;
+    unsigned long fetchedAtMillis;
+};
+
+ArrivalsData arrivals = {};
+
+TFT_eSPI tft = TFT_eSPI();
+TFT_eSprite rowSprite = TFT_eSprite(&tft);
 
 // ─── NVS helpers ───────────────────────────────────────────────────────────
 
@@ -417,7 +437,9 @@ void startProvisioning() {
 
 // ─── TfL polling ───────────────────────────────────────────────────────────
 
-int fetchNearestBusMinutes() {
+int fetchArrivals() {
+    arrivals.count = 0;
+
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("Wi-Fi not connected");
         return -1;
@@ -461,17 +483,16 @@ int fetchNearestBusMinutes() {
         return -1;
     }
 
-    JsonArray arrivals = doc.as<JsonArray>();
-    if (arrivals.size() == 0) {
+    JsonArray arr = doc.as<JsonArray>();
+    if (arr.size() == 0) {
         Serial.println("No arrivals");
         return -1;
     }
 
-    int minSeconds       = INT_MAX;
-    const char* nearestLine = "";
-    const char* nearestDest = "";
+    int count = 0;
+    for (JsonObject bus : arr) {
+        if (count >= MAX_ARRIVALS) break;
 
-    for (JsonObject bus : arrivals) {
         const char* line = bus["lineName"] | "?";
 
         bool tracked = false;
@@ -488,26 +509,180 @@ int fetchNearestBusMinutes() {
         }
         if (!tracked) continue;
 
-        int t = bus["timeToStation"] | INT_MAX;
-        if (t < minSeconds) {
-            minSeconds  = t;
-            nearestLine = line;
-            nearestDest = bus["destinationName"] | "?";
+        BusArrival& entry = arrivals.entries[count];
+        strncpy(entry.line, line, sizeof(entry.line) - 1);
+        entry.line[sizeof(entry.line) - 1] = '\0';
+
+        const char* dest = bus["destinationName"] | "?";
+        strncpy(entry.destination, dest, sizeof(entry.destination) - 1);
+        entry.destination[sizeof(entry.destination) - 1] = '\0';
+
+        entry.timeToStationSec = bus["timeToStation"] | 0;
+        entry.displayMinutes = entry.timeToStationSec / 60;
+        count++;
+    }
+
+    arrivals.count = count;
+    arrivals.fetchedAtMillis = millis();
+
+    // Insertion sort by timeToStationSec ascending
+    for (int i = 1; i < count; i++) {
+        BusArrival tmp = arrivals.entries[i];
+        int j = i - 1;
+        while (j >= 0 && arrivals.entries[j].timeToStationSec > tmp.timeToStationSec) {
+            arrivals.entries[j + 1] = arrivals.entries[j];
+            j--;
+        }
+        arrivals.entries[j + 1] = tmp;
+    }
+
+    if (count > 0) {
+        strncpy(currentLine, arrivals.entries[0].line, sizeof(currentLine) - 1);
+        currentLine[sizeof(currentLine) - 1] = '\0';
+        strncpy(currentDest, arrivals.entries[0].destination, sizeof(currentDest) - 1);
+        currentDest[sizeof(currentDest) - 1] = '\0';
+        currentMinutes = arrivals.entries[0].displayMinutes;
+        Serial.printf("Fetched %d arrivals, nearest: %s to %s in %d min\n",
+                      count, currentLine, currentDest, currentMinutes);
+        return count;
+    }
+
+    Serial.println("No tracked arrivals");
+    return -1;
+}
+
+// ─── TFT display ───────────────────────────────────────────────────────────
+
+const uint16_t COL_TFL_BLUE   = 0x01D1;  // #003888
+const uint16_t COL_HEADER_TXT = 0xFFFF;
+const uint16_t COL_BG         = 0x18E3;  // #1a1c2c
+const uint16_t COL_ROW_ALT    = 0x2124;  // #212428
+const uint16_t COL_TEXT       = 0xFFFF;
+const uint16_t COL_TEXT_DIM   = 0xAD55;  // #aaaaaa
+const uint16_t COL_BAR_RED    = 0xF800;
+const uint16_t COL_BAR_YELLOW = 0xFFE0;
+const uint16_t COL_BAR_BLUE   = 0x001F;
+const uint16_t COL_BAR_GREY   = 0x7BEF;
+
+void initDisplay() {
+    tft.init();
+    tft.setRotation(0);
+    tft.fillScreen(TFT_BLACK);
+    rowSprite.setColorDepth(16);
+    rowSprite.createSprite(240, 40);
+}
+
+uint16_t thresholdColour(int minutes) {
+    if (minutes < THRESHOLD_RED)    return COL_BAR_RED;
+    if (minutes < THRESHOLD_YELLOW) return COL_BAR_RED;
+    if (minutes < THRESHOLD_BLUE)   return COL_BAR_YELLOW;
+    if (minutes < THRESHOLD_OFF)    return COL_BAR_BLUE;
+    return COL_BAR_GREY;
+}
+
+void renderStatusBar();
+
+void renderArrivals() {
+    // Header bar (40px)
+    rowSprite.fillSprite(COL_TFL_BLUE);
+    rowSprite.setTextColor(COL_HEADER_TXT, COL_TFL_BLUE);
+    rowSprite.setTextDatum(ML_DATUM);
+    rowSprite.setFreeFont(&FreeSansBold12pt7b);
+    const char* title = (cfgDeviceName[0] != '\0') ? cfgDeviceName : "Bus Departures";
+    rowSprite.drawString(title, 10, 22);
+    rowSprite.pushSprite(0, 0);
+
+    // Column headers (24px, reuse 40px sprite — extra is covered by rows below)
+    rowSprite.fillSprite(COL_BG);
+    rowSprite.setFreeFont(&FreeSans9pt7b);
+    rowSprite.setTextColor(COL_TEXT_DIM, COL_BG);
+    rowSprite.setTextDatum(TL_DATUM);
+    rowSprite.drawString("Line", 14, 4);
+    rowSprite.drawString("Destination", 70, 4);
+    rowSprite.setTextDatum(TR_DATUM);
+    rowSprite.drawString("Min", 230, 4);
+    rowSprite.pushSprite(0, 40);
+
+    int rowY = 64;
+    int rowH = 32;
+
+    if (arrivals.count == 0) {
+        // Fill the entire data area with background
+        for (int i = 0; i < MAX_DISPLAY_ROWS; i++) {
+            rowSprite.fillSprite(COL_BG);
+            rowSprite.pushSprite(0, rowY + i * rowH);
+        }
+        // Overlay "no departures" message in the middle row
+        rowSprite.fillSprite(COL_BG);
+        rowSprite.setTextColor(COL_TEXT_DIM, COL_BG);
+        rowSprite.setTextDatum(MC_DATUM);
+        rowSprite.setFreeFont(&FreeSans9pt7b);
+        rowSprite.drawString("No tracked departures", 120, 16);
+        rowSprite.pushSprite(0, rowY + 3 * rowH);
+    } else {
+        int rows = min(arrivals.count, MAX_DISPLAY_ROWS);
+        for (int i = 0; i < MAX_DISPLAY_ROWS; i++) {
+            uint16_t rowBg = (i % 2 == 1) ? COL_ROW_ALT : COL_BG;
+            rowSprite.fillSprite(rowBg);
+
+            if (i < rows) {
+                BusArrival& a = arrivals.entries[i];
+
+                // Colour bar
+                uint16_t barCol = thresholdColour(a.displayMinutes);
+                rowSprite.fillRect(0, 0, 4, rowH, barCol);
+
+                rowSprite.setTextColor(COL_TEXT, rowBg);
+                rowSprite.setTextDatum(ML_DATUM);
+
+                // Line number (bold)
+                rowSprite.setFreeFont(&FreeSansBold9pt7b);
+                rowSprite.drawString(a.line, 14, rowH / 2);
+
+                // Destination (regular, clipped)
+                rowSprite.setFreeFont(&FreeSans9pt7b);
+                int destMaxW = 145;
+                String dest = a.destination;
+                while (rowSprite.textWidth(dest) > destMaxW && dest.length() > 1) {
+                    dest = dest.substring(0, dest.length() - 1);
+                }
+                if (dest.length() < strlen(a.destination)) dest += "..";
+                rowSprite.drawString(dest, 70, rowH / 2);
+
+                // Minutes (right-aligned)
+                rowSprite.setTextDatum(MR_DATUM);
+                rowSprite.setFreeFont(&FreeSansBold9pt7b);
+                char minBuf[8];
+                snprintf(minBuf, sizeof(minBuf), "%d", a.displayMinutes);
+                rowSprite.drawString(minBuf, 230, rowH / 2);
+            }
+
+            rowSprite.pushSprite(0, rowY + i * rowH);
         }
     }
 
-    if (minSeconds == INT_MAX) {
-        Serial.println("No tracked arrivals");
-        return -1;
-    }
+    renderStatusBar();
+}
 
-    int minutes = minSeconds / 60;
-    strncpy(currentLine, nearestLine, sizeof(currentLine) - 1);
-    currentLine[sizeof(currentLine) - 1] = '\0';
-    strncpy(currentDest, nearestDest, sizeof(currentDest) - 1);
-    currentDest[sizeof(currentDest) - 1] = '\0';
-    Serial.printf("Nearest: %s to %s in %d min\n", currentLine, currentDest, minutes);
-    return minutes;
+void renderStatusBar() {
+    rowSprite.fillSprite(COL_TFL_BLUE);
+    rowSprite.setFreeFont(&FreeSans9pt7b);
+    rowSprite.setTextColor(COL_HEADER_TXT, COL_TFL_BLUE);
+    rowSprite.setTextDatum(ML_DATUM);
+
+    const char* wifiStatus = (WiFi.status() == WL_CONNECTED) ? "WiFi: OK" : "WiFi: --";
+    rowSprite.drawString(wifiStatus, 10, 16);
+
+    rowSprite.setTextDatum(MR_DATUM);
+    if (lastPoll > 0) {
+        int secAgo = (millis() - lastPoll) / 1000;
+        char agoBuf[24];
+        snprintf(agoBuf, sizeof(agoBuf), "Updated: %ds ago", secAgo);
+        rowSprite.drawString(agoBuf, 230, 16);
+    } else {
+        rowSprite.drawString("No data yet", 230, 16);
+    }
+    rowSprite.pushSprite(0, 288);
 }
 
 // ─── LED logic ─────────────────────────────────────────────────────────────
@@ -747,6 +922,14 @@ void handleGetStatus() {
     tracking["nearestLine"]         = currentLine;
     tracking["nearestDestination"]  = currentDest;
 
+    JsonArray arr = tracking["arrivals"].to<JsonArray>();
+    for (int i = 0; i < arrivals.count; i++) {
+        JsonObject entry = arr.add<JsonObject>();
+        entry["line"]        = arrivals.entries[i].line;
+        entry["destination"] = arrivals.entries[i].destination;
+        entry["minutes"]     = arrivals.entries[i].displayMinutes;
+    }
+
     String body;
     serializeJson(doc, body);
     server.send(200, "application/json", body);
@@ -782,6 +965,8 @@ void setup() {
     setLED(255, 0, 0); delay(300);
     ledOff();
     Serial.println("LED self-test complete");
+
+    initDisplay();
 
     loadConfig();
     Serial.printf("API key: %s\n", cfgApiKey);
@@ -831,7 +1016,31 @@ void loop() {
 
     if (now - lastPoll >= POLL_INTERVAL_MS || lastPoll == 0) {
         lastPoll = now;
-        currentMinutes = fetchNearestBusMinutes();
+        fetchArrivals();
+        renderArrivals();
+    }
+
+    if (now - lastDisplayRefresh >= DISPLAY_REFRESH_MS) {
+        lastDisplayRefresh = now;
+
+        if (arrivals.count > 0) {
+            unsigned long elapsed = now - arrivals.fetchedAtMillis;
+            bool changed = false;
+            for (int i = 0; i < arrivals.count; i++) {
+                int remaining = arrivals.entries[i].timeToStationSec - (int)(elapsed / 1000);
+                int newMin = (remaining > 0) ? remaining / 60 : 0;
+                if (newMin != arrivals.entries[i].displayMinutes) {
+                    arrivals.entries[i].displayMinutes = newMin;
+                    changed = true;
+                }
+            }
+            if (arrivals.count > 0) {
+                currentMinutes = arrivals.entries[0].displayMinutes;
+            }
+            if (changed) renderArrivals();
+        }
+
+        renderStatusBar();
     }
 
     unsigned long ledInterval = (currentMinutes >= 0 && currentMinutes < THRESHOLD_RED) ? 500 : 1000;

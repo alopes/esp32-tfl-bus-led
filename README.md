@@ -14,16 +14,36 @@ Onboard RGB LED on an ESP32-S3 shows how soon the next bus arrives at your stop.
 | 2–4 min | Red |
 | 0–1 min | Flashing red |
 
+## TFT Display
+
+An ILI9341 2.8" TFT (240×320) shows up to 7 upcoming departures with line numbers, destinations, and countdown times — all colour-coded to match the LED thresholds. The countdown updates every second between API polls.
+
+<p align="center">
+  <img src="display-preview.svg" alt="Display preview" width="280">
+</p>
+
+### Wiring
+
+| ILI9341 Pin | ESP32-S3 GPIO |
+|---|---|
+| CS | GPIO 10 |
+| RST | GPIO 9 |
+| DC | GPIO 8 |
+| MOSI | GPIO 11 |
+| SCK | GPIO 12 |
+| LED | 3V3 |
+| VCC | 3V3 |
+| GND | GND |
+
 ## How It Works
 
-The device connects to Wi-Fi and polls the TfL Unified API every 30 seconds for live arrivals at your configured stop. It filters the response to only the bus lines you're tracking, finds the nearest arrival, and converts the time-to-station into minutes. That minute value maps to an LED colour (see table above). Serial output logs each update with the line, destination, and colour — useful for debugging without needing to decode LED states.
+The device connects to Wi-Fi and polls the TfL Unified API every 30 seconds for live arrivals at your configured stop. It filters the response to only the bus lines you're tracking, collects up to 8 arrivals sorted by time, and displays them on the TFT screen. The nearest arrival also drives the LED colour (see table above). Between polls, displayed minutes count down in real time. Serial output logs each update with the line, destination, and colour.
 
 ## Hardware
 
 - [ESP32-S3-DevKitC-1](https://amzn.to/40KIAMw) (any variant with onboard WS2812 RGB LED on GPIO48)
+- [ILI9341 2.8" SPI TFT display](https://amzn.to/3YQ4Lkw) (240×320, 4-wire SPI)
 - USB-C cable for power and flashing
-
-No additional wiring needed.
 
 ## Setup
 
