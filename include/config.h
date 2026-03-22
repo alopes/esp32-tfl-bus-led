@@ -33,11 +33,6 @@ const int THRESHOLD_BLUE   = 10;
 const int THRESHOLD_YELLOW = 5;
 const int THRESHOLD_RED    = 2;
 
-const int TFT_PIN_CS   = 10;
-const int TFT_PIN_RST  = 9;
-const int TFT_PIN_DC   = 8;
-const int TFT_PIN_MOSI = 11;
-const int TFT_PIN_SCK  = 12;
 const int MAX_ARRIVALS  = 8;
 const int MAX_DISPLAY_ROWS = 7;
 const unsigned long DISPLAY_REFRESH_MS = 1000;

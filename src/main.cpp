@@ -438,8 +438,6 @@ void startProvisioning() {
 // ─── TfL polling ───────────────────────────────────────────────────────────
 
 int fetchArrivals() {
-    arrivals.count = 0;
-
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("Wi-Fi not connected");
         return -1;
@@ -517,8 +515,10 @@ int fetchArrivals() {
         strncpy(entry.destination, dest, sizeof(entry.destination) - 1);
         entry.destination[sizeof(entry.destination) - 1] = '\0';
 
-        entry.timeToStationSec = bus["timeToStation"] | 0;
-        entry.displayMinutes = entry.timeToStationSec / 60;
+        int t = bus["timeToStation"] | -1;
+        if (t < 0) continue;
+        entry.timeToStationSec = t;
+        entry.displayMinutes = t / 60;
         count++;
     }
 
@@ -1016,8 +1016,9 @@ void loop() {
 
     if (now - lastPoll >= POLL_INTERVAL_MS || lastPoll == 0) {
         lastPoll = now;
-        fetchArrivals();
-        renderArrivals();
+        if (fetchArrivals() > 0) {
+            renderArrivals();
+        }
     }
 
     if (now - lastDisplayRefresh >= DISPLAY_REFRESH_MS) {
@@ -1034,9 +1035,7 @@ void loop() {
                     changed = true;
                 }
             }
-            if (arrivals.count > 0) {
-                currentMinutes = arrivals.entries[0].displayMinutes;
-            }
+            currentMinutes = arrivals.entries[0].displayMinutes;
             if (changed) renderArrivals();
         }
 
